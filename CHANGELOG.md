@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [20.08.1] (unreleased)
 
+### Added
+- Add support for TLSv1.3. [#588](https://github.com/greenbone/openvas/pull/588)
+
 ### Fixed
 - Fork vhosts before creating the socket.[#576](https://github.com/greenbone/openvas/pull/576)
 - Check if another forked child has already added the same vhost. [#581](https://github.com/greenbone/openvas/pull/581)
