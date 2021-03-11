@@ -28,7 +28,6 @@
 #include "network.h" // for OPENVAS_ENCAPS_IP
 
 #include <errno.h>               // for errno
-#include <gvm/base/hosts.h>      // for g_vhost_t
 #include <gvm/base/networking.h> // for port_protocol_t
 #include <gvm/base/prefs.h>      // for prefs_get_bool
 #include <gvm/util/nvticache.h>  // for nvticache_initialized
@@ -243,37 +242,60 @@ plug_add_host_fqdn (struct script_infos *args, const char *hostname,
         }
       g_strfreev (excluded);
     }
+  g_message("adding new vhost: %s - source: %s", hostname, source);
   vhost = gvm_vhost_new (g_strdup (hostname), g_strdup (source));
   args->vhosts = g_slist_prepend (args->vhosts, vhost);
   return 0;
 }
 
+void
+plug_set_current_vhost(gvm_vhost_t *vhost)
+{
+  g_message("setting current vhost to %s", vhost->value);
+  current_vhost = vhost;
+}
+
 char *
 plug_get_host_fqdn (struct script_infos *args)
 {
-  GSList *vhosts = args->vhosts;
+  char *buffer;
+  int len = 0, pos = 0;
 
-  if (!args->vhosts)
-    return addr6_as_str (args->ip);
+  /* stores the plugin oid, to be launch again for all vhosts associated 
+   * to this host */
+  buffer = g_strdup_printf("internal/vhostplugins/%s",  addr6_as_str (args->ip));
+  kb_item_add_str_unique (args->results, buffer, args->oid, len, pos);
+  //g_message ("added %s into %s", args->oid, buffer);
+  g_free (buffer);
 
-  /* Workaround for rapid growth of forked processes ie. http_get() calls
-   * within foreach() loops. */
   if (current_vhost)
     return g_strdup (current_vhost->value);
-  while (vhosts)
-    {
-      pid_t pid = plug_fork_child (args->key);
 
-      if (pid == 0)
-        {
-          current_vhost = vhosts->data;
-          return g_strdup (current_vhost->value);
-        }
-      else if (pid == -1)
-        return NULL;
-      vhosts = vhosts->next;
-    }
-  exit (0);
+  return addr6_as_str (args->ip);
+
+
+  
+//  /* Workaround for rapid growth of forked processes ie. http_get() calls
+//   * within foreach() loops. */
+//  if (current_vhost)
+//    return g_strdup (current_vhost->value);
+//  while (vhosts)
+//    {
+//      pid_t pid = plug_fork_child (args->key);
+//      
+//      if (pid == 0)
+//        {
+//          current_vhost = vhosts->data;
+//          g_message ("The script name is %s (%s) for %s", args->name, args->oid, current_vhost->value);
+//          return g_strdup (current_vhost->value);
+//        }
+//      else if (pid > 0)
+//        g_message ("%d forked script name %s", getpid(), nasl_get_plugin_filename());
+//      else if (pid == -1)
+//        return NULL;
+//      vhosts = vhosts->next;
+//    }
+//  exit (0);
 }
 
 GSList *

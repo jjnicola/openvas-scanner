@@ -48,6 +48,7 @@ struct script_infos
   char *name;
   GHashTable *udp_data;
   struct in6_addr *ip;
+  char *hostname;
   GSList *vhosts;
   int standalone;
   int denial_port;
