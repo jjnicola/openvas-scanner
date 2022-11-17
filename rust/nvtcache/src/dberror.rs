@@ -1,35 +1,30 @@
 use redis::*;
-use std::error;
+
 use std::fmt;
 
 pub type Result<T> = std::result::Result<T, DbError>;
 
 #[derive(Debug)]
 pub enum DbError {
-    RedisErr(RedisError),
+    RedisErr {source: String, detail: String},
     CustomErr(String),
 }
 
 impl fmt::Display for DbError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &*self {
-            DbError::RedisErr(..) => write!(f, "Redis Error"),
+            DbError::RedisErr {source, detail} => write!(f, "Redis Error: {source}. {detail}"),
             DbError::CustomErr(e) => write!(f, "Error: {}", e),
-        }
-    }
-}
-
-impl error::Error for DbError {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match *self {
-            DbError::RedisErr(ref e) => Some(e),
-            DbError::CustomErr(_) => None,
         }
     }
 }
 
 impl From<RedisError> for DbError {
     fn from(err: RedisError) -> DbError {
-        DbError::RedisErr(err)
+        let mut detail = "";
+        if let Some(d) = err.detail() {
+            detail = d;
+        }
+        DbError::RedisErr {source: err.to_string(), detail: detail.to_string()}
     }
 }
