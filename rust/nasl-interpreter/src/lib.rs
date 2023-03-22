@@ -30,6 +30,7 @@ pub use error::InterpretError;
 pub use error::InterpretErrorKind;
 pub use interpreter::Interpreter;
 pub use loader::*;
+pub use nasl_ssh::*;
 pub use logger::{DefaultLogger, Mode, NaslLogger};
 pub use naslvalue::NaslValue;
 
@@ -42,4 +43,5 @@ where
     K: AsRef<str>,
 {
     built_in_functions::lookup(function_name)
+
 }
