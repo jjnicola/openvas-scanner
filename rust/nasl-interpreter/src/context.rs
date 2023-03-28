@@ -6,8 +6,8 @@ use nasl_syntax::Statement;
 use storage::{DefaultDispatcher, Dispatcher, Retriever};
 
 use crate::{
-    error::InterpretError, logger::NaslLogger, lookup_keys::FC_ANON_ARGS,
-    Loader, NaslValue, nasl_sessions::{Sessions, SessionsHandler},
+    error::InterpretError, logger::NaslLogger, lookup_keys::FC_ANON_ARGS, sessions::Sessions,
+    Loader, NaslValue,
 };
 
 /// Contexts are responsible to locate, add and delete everything that is declared within a NASL plugin
@@ -217,7 +217,7 @@ impl Default for Register {
         Self::new()
     }
 }
-use std::{collections::HashMap};
+use std::collections::HashMap;
 type Named = HashMap<String, ContextType>;
 
 /// NaslContext is a struct to contain variables and if root declared functions
@@ -273,7 +273,7 @@ pub struct Context<'a, K> {
     /// Default logger.
     logger: &'a dyn NaslLogger,
     /// Default logger.
-    sessions: &'a dyn SessionsHandler,
+    sessions: &'a Sessions<'a>,
 }
 
 impl<'a, K> Context<'a, K> {
@@ -284,7 +284,7 @@ impl<'a, K> Context<'a, K> {
         retriever: &'a dyn Retriever<K>,
         loader: &'a dyn Loader,
         logger: &'a dyn NaslLogger,
-        sessions: &'a dyn SessionsHandler,
+        sessions: &'a Sessions<'a>,
     ) -> Self {
         Self {
             key,
@@ -317,13 +317,13 @@ impl<'a, K> Context<'a, K> {
         self.loader
     }
     /// Get the sessions
-    pub fn sessions(&self) -> &dyn SessionsHandler {
+    pub fn sessions(&self) -> &'a Sessions<'a> {
         self.sessions
     }
 }
 /// Can be used as DefaultContext::default().as_context() within tests
 #[derive(Default)]
-pub struct DefaultContext{
+pub struct DefaultContext<'a> {
     /// key for the default context. A name or an OID
     pub key: String,
     /// Default Storage
@@ -333,19 +333,19 @@ pub struct DefaultContext{
     /// Default logger
     pub logger: Box<dyn NaslLogger>,
     /// Default logger
-    pub sessions: Box<dyn SessionsHandler>,
+    pub sessions: Sessions<'a>,
 }
 
-impl DefaultContext {
+impl<'a> DefaultContext<'a> {
     /// Converts a DefaultContext to Context
-    pub fn as_context(&self) -> Context<String> {
+    pub fn as_context(&'a self) -> Context<String> {
         Context {
             key: &self.key,
             dispatcher: &*self.dispatcher,
             retriever: &*self.dispatcher,
             loader: &*self.loader,
             logger: self.logger.as_ref(),
-            sessions: self.sessions.as_ref(),
+            sessions: &self.sessions,
         }
     }
 }

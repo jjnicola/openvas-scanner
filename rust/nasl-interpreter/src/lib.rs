@@ -20,9 +20,8 @@ mod loader;
 mod logger;
 mod lookup_keys;
 mod loop_extension;
-mod nasl_sessions;
-mod nasl_ssh;
 mod operator;
+mod sessions;
 
 pub use context::Context;
 pub use context::ContextType;
@@ -34,8 +33,8 @@ pub use error::InterpretErrorKind;
 pub use interpreter::Interpreter;
 pub use loader::*;
 pub use logger::{DefaultLogger, Mode, NaslLogger};
-pub use nasl_ssh::*;
 pub use naslvalue::NaslValue;
+pub use sessions::Sessions;
 
 // Is a type definition for built-in functions
 pub(crate) type NaslFunction<'a, K> =
@@ -46,5 +45,4 @@ where
     K: AsRef<str>,
 {
     built_in_functions::lookup(function_name)
-
 }

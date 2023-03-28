@@ -34,7 +34,7 @@ where
     K: AsRef<str>,
 {
     /// Creates a new Interpreter.
-    pub fn new(register: &'a mut Register, ctxconfigs: &'a Context<K>) -> Self {
+    pub fn new(register: &'a mut Register, ctxconfigs: &'a Context<'a, K>) -> Self {
         Interpreter {
             registrat: register,
             ctxconfigs,
