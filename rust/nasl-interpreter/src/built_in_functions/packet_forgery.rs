@@ -449,10 +449,89 @@ fn insert_ip_options<K>(
 ///  
 /// The modified IP datagram or NULL on error.
 fn forge_tcp_packet<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let mut ip_buf = match register.named("ip") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "set_ip_element: missing <ip> field".to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+
+    let data = match register.named("data") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        Some(ContextType::Value(NaslValue::String(d))) => d.as_bytes().to_vec(),
+        Some(ContextType::Value(NaslValue::Number(d))) => d.to_be_bytes().to_vec(),
+        _ => Vec::<u8>::new(),
+    };
+
+    let total_length = 20 + data.len();
+    let mut buf = vec![0; total_length];
+    let mut tcp_seg = packet::tcp::MutableTcpPacket::new(&mut buf).unwrap();
+
+    if data.len() > 0 {
+        tcp_seg.set_payload(&data);
+    }
+
+    match register.named("th_sport") {
+        Some(ContextType::Value(NaslValue::Number(x))) => tcp_seg.set_source(*x as u16),
+        _ => tcp_seg.set_source(0_u16),
+    };
+    match register.named("th_dport") {
+        Some(ContextType::Value(NaslValue::Number(x))) => tcp_seg.set_destination(*x as u16),
+        _ => tcp_seg.set_destination(0_u16),
+    };
+
+    match register.named("th_seq") {
+        Some(ContextType::Value(NaslValue::Number(x))) => tcp_seg.set_sequence(*x as u32),
+        _ => tcp_seg.set_sequence(random_impl()? as u32),
+    };
+    match register.named("th_ack") {
+        Some(ContextType::Value(NaslValue::Number(x))) => tcp_seg.set_acknowledgement(*x as u32),
+        _ => tcp_seg.set_acknowledgement(0_u32),
+    };
+    match register.named("th_x2") {
+        Some(ContextType::Value(NaslValue::Number(x))) => tcp_seg.set_reserved(*x as u8),
+        _ => tcp_seg.set_reserved(0_u8),
+    };
+    match register.named("th_off") {
+        Some(ContextType::Value(NaslValue::Number(x))) => tcp_seg.set_data_offset(*x as u8),
+        _ => tcp_seg.set_data_offset(5_u8),
+    };
+    match register.named("th_flags") {
+        Some(ContextType::Value(NaslValue::Number(x))) => tcp_seg.set_flags(*x as u16),
+        _ => tcp_seg.set_flags(0_u16),
+    };
+    match register.named("th_win") {
+        Some(ContextType::Value(NaslValue::Number(x))) => tcp_seg.set_window(*x as u16),
+        _ => tcp_seg.set_window(0_u16),
+    };
+    match register.named("th_urp") {
+        Some(ContextType::Value(NaslValue::Number(x))) => tcp_seg.set_urgent_ptr(*x as u16),
+        _ => tcp_seg.set_urgent_ptr(0_u16),
+    };
+
+    let chksum = match register.named("th_sum") {
+        Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
+        _ => {
+            let mut ip_buf_aux = ip_buf.clone();
+            ip_buf_aux.append(&mut buf.clone());
+            checksum(&packet::ipv4::Ipv4Packet::new(&ip_buf_aux).unwrap())
+        }
+    };
+    let mut tcp_seg = packet::tcp::MutableTcpPacket::new(&mut buf).unwrap();
+    tcp_seg.set_checksum(chksum);
+
+    ip_buf.append(&mut buf);
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
+    let chksum = checksum(&pkt.to_immutable());
+    pkt.set_checksum(chksum);
+
+    Ok(NaslValue::Data(ip_buf))
 }
 
 /// Get an TCP element from a IP datagram. It returns a data block or an integer, according to the type of the element. Its arguments are:
