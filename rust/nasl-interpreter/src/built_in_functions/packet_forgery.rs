@@ -13,12 +13,25 @@ use crate::{
     helper::{get_interface_by_local_ip, get_source_ip},
     Context, ContextType, FunctionErrorKind, NaslFunction, NaslValue, Register,
 };
+use pcap::Capture;
 use pnet::packet::{
     self,
     ip::IpNextHeaderProtocol,
-    ipv4::{checksum, Ipv4OptionNumber, MutableIpv4OptionPacket},
+    ipv4::{
+        checksum, Ipv4Option, Ipv4OptionNumber, Ipv4OptionPacket, MutableIpv4OptionPacket,
+        MutableIpv4Packet,
+    },
 };
 use socket2::{Domain, Protocol, Socket};
+
+macro_rules! custom_error {
+    ($a:expr, $b:expr) => {
+        Err(FunctionErrorKind::Diagnostic(
+            format!($a, $b),
+            Some(NaslValue::Null),
+        ))
+    };
+}
 
 /// Default Timeout for received
 const DEFAULT_TIMEOUT: i32 = 5000;
@@ -668,19 +681,19 @@ fn nasl_send_packet<K>(
     register: &Register,
     configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    let _pcap_active = match register.named("pcap_active") {
-        Some(ContextType::Value(NaslValue::Boolean(x))) => x,
-        None => &true,
+    let use_pcap = match register.named("pcap_active") {
+        Some(ContextType::Value(NaslValue::Boolean(x))) => *x,
+        None => true,
         _ => return Err(("Boolean", "Invalid pcap_active value").into()),
     };
 
-    let _filter = match register.named("pcap_filter") {
-        Some(ContextType::Value(NaslValue::String(x))) => Some(x),
-        None => None,
+    let filter = match register.named("pcap_filter") {
+        Some(ContextType::Value(NaslValue::String(x))) => x.to_string(),
+        None => String::new(),
         _ => return Err(("String", "Invalid pcap_filter value").into()),
     };
 
-    let _timeout = match register.named("pcap_timeout") {
+    let timeout = match register.named("pcap_timeout") {
         Some(ContextType::Value(NaslValue::Number(x))) => *x as i32 * 1000i32, // to milliseconds
         None => DEFAULT_TIMEOUT,
         _ => return Err(("Integer", "Invalid timeout value").into()),
@@ -718,64 +731,85 @@ fn nasl_send_packet<K>(
         ));
     };
 
-    let packet_raw = match &positional[0] {
-        NaslValue::Data(data) => data as &[u8],
-        _ => return Err(("Data", "Invalid packet").into()),
-    };
-    let packet = packet::ipv4::Ipv4Packet::new(packet_raw).unwrap();
-
-    let _packet_sz = match positional[1] {
-        NaslValue::Number(sz) => sz,
-        _ => return Err(("Number", "Invalid packet size").into()),
+    let _dflt_packet_sz = match register.named("length") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x,
+        None => 0,
+        _ => return Err(("Number", "Invalid length value").into()),
     };
 
     // Get the iface name, to set the capture device.
     let target_ip = get_host_ip(configs)?;
     let local_ip = get_source_ip(target_ip, 50000u16)?;
-    let _iface = get_interface_by_local_ip(local_ip)?;
+    let iface = get_interface_by_local_ip(local_ip)?;
 
-    if allow_broadcast {
-        if let Err(err) = soc.set_broadcast(true) {
-            return Err(FunctionErrorKind::Diagnostic(
-                format!("Not possible to set broadcast soc option: {}", err),
-                Some(NaslValue::Null),
-            ));
-        }
-        // We allow broadcast, only if the dst ip inside the packet is the broadcast
-        allow_broadcast = packet.get_destination().is_broadcast();
-    }
-
-    // No broadcast destination and dst ip address inside the IP packet
-    // differs from target IP, is consider a malicious or buggy script.
-    if packet.get_destination() != target_ip && !allow_broadcast {
-        return Err(FunctionErrorKind::Diagnostic(
-            format!("send_packet: malicious or buggy script is trying to send packet to {} instead of designated target {}",
-                    packet.get_destination(), target_ip),
-            Some(NaslValue::Null),
-        ));
-    }
-
-    let sock_str = format!("{}:{}", &packet.get_destination().to_string().as_str(), 0);
-    let sockaddr = match SocketAddr::from_str(&sock_str) {
-        Ok(addr) => socket2::SockAddr::from(addr),
-        Err(e) => {
-            return Err(FunctionErrorKind::Diagnostic(
-                format!("send_packet: {}", e),
-                Some(NaslValue::Null),
-            ));
-        }
+    let mut capture_dev = match Capture::from_device(iface.clone()) {
+        Ok(c) => match c.promisc(true).timeout(timeout).open() {
+            Ok(capture) => capture,
+            Err(e) => return custom_error!("send_packet: {}", e),
+        },
+        Err(e) => return custom_error!("send_packet: {}", e),
     };
 
-    match soc.send_to(packet_raw, &sockaddr) {
-        Ok(b) => println!("Sent {} bytes", b),
-        Err(e) => {
+    for pkt in positional.iter() {
+        let packet_raw = match pkt {
+            NaslValue::Data(data) => data as &[u8],
+            _ => return Err(("Data", "Invalid packet").into()),
+        };
+        let packet = packet::ipv4::Ipv4Packet::new(packet_raw).unwrap();
+
+        if allow_broadcast {
+            if let Err(err) = soc.set_broadcast(true) {
+                return custom_error!("Not possible to set broadcast soc option: {}", err);
+            }
+            // We allow broadcast, only if the dst ip inside the packet is the broadcast
+            allow_broadcast = packet.get_destination().is_broadcast();
+        }
+
+        // No broadcast destination and dst ip address inside the IP packet
+        // differs from target IP, is consider a malicious or buggy script.
+        if packet.get_destination() != target_ip && !allow_broadcast {
             return Err(FunctionErrorKind::Diagnostic(
-                format!("send_packet: {}", e),
+                format!("send_packet: malicious or buggy script is trying to send packet to {} instead of designated target {}",
+                        packet.get_destination(), target_ip),
                 Some(NaslValue::Null),
             ));
         }
-    }
 
+        let sock_str = format!("{}:{}", &packet.get_destination().to_string().as_str(), 0);
+        let sockaddr = match SocketAddr::from_str(&sock_str) {
+            Ok(addr) => socket2::SockAddr::from(addr),
+            Err(e) => {
+                return Err(FunctionErrorKind::Diagnostic(
+                    format!("send_packet: {}", e),
+                    Some(NaslValue::Null),
+                ));
+            }
+        };
+
+        match soc.send_to(packet_raw, &sockaddr) {
+            Ok(b) => {
+                println!("Sent {} bytes", b);
+            }
+            Err(e) => {
+                return Err(FunctionErrorKind::Diagnostic(
+                    format!("send_packet: {}", e),
+                    Some(NaslValue::Null),
+                ));
+            }
+        }
+
+        if use_pcap {
+            let p = match capture_dev.filter(&filter, true) {
+                Ok(_) => capture_dev.next_packet(),
+                Err(e) => Err(pcap::Error::PcapError(e.to_string())),
+            };
+
+            match p {
+                Ok(packet) => return Ok(NaslValue::Data(packet.data.to_vec())),
+                Err(_) => return Ok(NaslValue::Null),
+            };
+        }
+    }
     Ok(NaslValue::Null)
 }
 
