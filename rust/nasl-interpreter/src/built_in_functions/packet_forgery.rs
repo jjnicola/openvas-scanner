@@ -21,7 +21,11 @@ use pnet::packet::{
         checksum, Ipv4Option, Ipv4OptionNumber, Ipv4OptionPacket, MutableIpv4OptionPacket,
         MutableIpv4Packet,
     },
+    tcp::{ipv4_checksum, TcpPacket},
+    FromPacket, Packet,
 };
+
+use pnet::*;
 use socket2::{Domain, Protocol, Socket};
 
 macro_rules! custom_error {
@@ -518,16 +522,19 @@ fn forge_tcp_packet<K>(
     let chksum = match register.named("th_sum") {
         Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
         _ => {
-            let mut ip_buf_aux = ip_buf.clone();
-            ip_buf_aux.append(&mut buf.clone());
-            checksum(&packet::ipv4::Ipv4Packet::new(&ip_buf_aux).unwrap())
+            let pkt = packet::ipv4::Ipv4Packet::new(&ip_buf).unwrap();
+            let tcp_aux = TcpPacket::new(tcp_seg.packet()).unwrap();
+            ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
         }
     };
+
     let mut tcp_seg = packet::tcp::MutableTcpPacket::new(&mut buf).unwrap();
     tcp_seg.set_checksum(chksum);
 
     ip_buf.append(&mut buf);
+    let l = ip_buf.len();
     let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
+    pkt.set_total_length(l as u16);
     let chksum = checksum(&pkt.to_immutable());
     pkt.set_checksum(chksum);
 
