@@ -21,7 +21,10 @@ use pnet::packet::{
         checksum, Ipv4Option, Ipv4OptionNumber, Ipv4OptionPacket, MutableIpv4OptionPacket,
         MutableIpv4Packet,
     },
-    tcp::{ipv4_checksum, TcpPacket},
+    tcp::{
+        ipv4_checksum, MutableTcpOptionPacket, TcpOption, TcpOptionNumber, TcpOptionNumbers,
+        TcpOptionPacket, TcpPacket,
+    },
     FromPacket, Packet,
 };
 
@@ -623,9 +626,131 @@ fn insert_tcp_options<K>(
 
 /// Receive a list of IPv4 datagrams and print their TCP part in a readable format in the screen.
 fn dump_tcp_packet<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
+    let positional = register.positional();
+    if positional.is_empty() {
+        return Ok(NaslValue::Null);
+    }
+
+    for tcp_seg in positional.iter() {
+        match tcp_seg {
+            NaslValue::Data(data) => {
+                display_packet(data);
+                let ip = match packet::ipv4::Ipv4Packet::new(data) {
+                    Some(ip) => ip,
+                    None => {
+                        return Err(FunctionErrorKind::Diagnostic(
+                        "Usage : insert_ip_options(ip:<ip>, code:<code>, length:<len>, value:<value"
+                            .to_string(),
+                        Some(NaslValue::Null),
+                    ));
+                    }
+                };
+
+                match packet::tcp::TcpPacket::new(ip.payload()) {
+                    Some(pkt) => {
+                        println!("------\n");
+                        println!("\tth_sport  : {:?}", pkt.get_source());
+                        println!("\tth_dport   : {:?}", pkt.get_destination());
+                        println!("\tth_seq : {:?}", pkt.get_sequence());
+                        println!("\tth_ack : {:?}", pkt.get_acknowledgement());
+                        println!("\tth_x2  : {:?}", pkt.get_reserved());
+                        println!("\tth_off : {:?}", pkt.get_data_offset());
+
+                        let flags = pkt.get_flags();
+                        let mut f = String::new();
+                        f.push_str("\tth_flags : ");
+                        if flags & pnet::packet::tcp::TcpFlags::FIN as u16
+                            == pnet::packet::tcp::TcpFlags::FIN as u16
+                        {
+                            f.push_str("TH_FIN");
+                        }
+                        if flags & pnet::packet::tcp::TcpFlags::SYN as u16
+                            == pnet::packet::tcp::TcpFlags::SYN as u16
+                        {
+                            if !f.is_empty() {
+                                f.push_str("|")
+                            };
+                            f.push_str("TH_SYN");
+                        }
+                        if flags & pnet::packet::tcp::TcpFlags::RST as u16
+                            == pnet::packet::tcp::TcpFlags::RST as u16
+                        {
+                            if !f.is_empty() {
+                                f.push_str("|")
+                            };
+                            f.push_str("TH_RST");
+                        }
+                        if flags & pnet::packet::tcp::TcpFlags::PSH as u16
+                            == pnet::packet::tcp::TcpFlags::PSH as u16
+                        {
+                            if !f.is_empty() {
+                                f.push_str("|")
+                            };
+                            f.push_str("TH_PSH");
+                        }
+                        if flags & pnet::packet::tcp::TcpFlags::ACK as u16
+                            == pnet::packet::tcp::TcpFlags::ACK as u16
+                        {
+                            if !f.is_empty() {
+                                f.push_str("|")
+                            };
+                            f.push_str("TH_ACK");
+                        }
+                        if flags & pnet::packet::tcp::TcpFlags::URG as u16
+                            == pnet::packet::tcp::TcpFlags::URG as u16
+                        {
+                            if !f.is_empty() {
+                                f.push_str("|")
+                            };
+                            f.push_str("TH_URG");
+                        }
+                        if f.is_empty() {
+                            f.push_str(" 0");
+                        } else {
+                            f.push_str(&format!(" {:?}", flags));
+                        };
+                        println!("{}", f);
+                        println!("\tth_win  : {:?}", pkt.get_window());
+                        println!("\tth_sum : {:?}", pkt.get_checksum());
+                        println!("\tth_urp : {:?}", pkt.get_urgent_ptr());
+                        println!("\tTCP Options:");
+                        for o in pkt.get_options_iter() {
+                            let n = o.get_number();
+                            let p = o.payload();
+                            if n == TcpOptionNumbers::MSS {
+                                println!("\t\tTCPOPT_MAXSEG: {:?}", p);
+                            }
+                            if n == TcpOptionNumbers::WSCALE {
+                                println!("\t\tTCPOPT_WINDOW: {:?}", p);
+                            }
+
+                            if n == TcpOptionNumbers::SACK_PERMITTED {
+                                println!("\t\tTCPOPT_SACK_PERMITTED: {:?}", p);
+                            }
+                            if n == TcpOptionNumbers::TIMESTAMPS {
+                                println!("\t\tTCPOPT_TIMESTAMP TSval: {:?}", p);
+                            }
+                        }
+                        display_packet(&data);
+                    }
+                    None => {
+                        return Err(FunctionErrorKind::WrongArgument(
+                            "valid ip packet".to_string(),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(FunctionErrorKind::WrongArgument(
+                    "valid ip packet".to_string(),
+                ));
+            }
+        }
+    }
+
     Ok(NaslValue::Null)
 }
 
