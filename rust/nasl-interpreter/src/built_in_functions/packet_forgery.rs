@@ -563,10 +563,42 @@ fn forge_tcp_packet<K>(
 ///  
 /// Returns an TCP element from a IP datagram.
 fn get_tcp_element<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let buf = match register.named("tcp") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "get_tcp_element: missing <tcp> field".to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+    let tcp = packet::tcp::TcpPacket::new(ip.payload()).unwrap();
+
+    match register.named("element") {
+        Some(ContextType::Value(NaslValue::String(el))) => match el.as_str() {
+            "th_sport" => Ok(NaslValue::Number(tcp.get_source() as i64)),
+            "th_dport" => Ok(NaslValue::Number(tcp.get_destination() as i64)),
+            "th_seq" => Ok(NaslValue::Number(tcp.get_sequence() as i64)),
+            "th_ack" => Ok(NaslValue::Number(tcp.get_acknowledgement() as i64)),
+            "th_x2" => Ok(NaslValue::Number(tcp.get_reserved() as i64)),
+            "th_off" => Ok(NaslValue::Number(tcp.get_data_offset() as i64)),
+            "th_flags" => Ok(NaslValue::Number(tcp.get_flags() as i64)),
+            "th_win" => Ok(NaslValue::Number(tcp.get_window() as i64)),
+            "th_sum" => Ok(NaslValue::Number(tcp.get_checksum() as i64)),
+            "th_urp" => Ok(NaslValue::Number(tcp.get_urgent_ptr() as i64)),
+            "th_data" => Ok(NaslValue::Data(tcp.payload().to_vec())),
+            _ => Ok(NaslValue::Null),
+        },
+        _ => Err(FunctionErrorKind::Diagnostic(
+            "get_tcp_element: missing valid tcp element".to_string(),
+            Some(NaslValue::Null),
+        )),
+    }
 }
 
 /// Get a TCP option from a IP datagram. Its arguments are:
