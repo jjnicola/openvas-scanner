@@ -476,11 +476,12 @@ fn forge_tcp_packet<K>(
         _ => Vec::<u8>::new(),
     };
 
+    //tcp lenght + data lenght
     let total_length = 20 + data.len();
     let mut buf = vec![0; total_length];
     let mut tcp_seg = packet::tcp::MutableTcpPacket::new(&mut buf).unwrap();
 
-    if data.len() > 0 {
+    if !data.is_empty() {
         tcp_seg.set_payload(&data);
     }
 
@@ -635,10 +636,121 @@ fn get_tcp_option<K>(
 /// - th_x2: is a reserved field and should probably be left unchanged. 0 by default.
 /// - update_ip_len: is a flag (TRUE by default). If set, NASL will recompute the size field of the IP datagram.
 fn set_tcp_elements<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let buf = match register.named("tcp") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "get_tcp_element: missing <tcp> field".to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+    let iph_len = ip.get_header_length() as usize * 4; // the header lenght is given in 32-bits words
+
+    let data = match register.named("data") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        Some(ContextType::Value(NaslValue::String(d))) => d.as_bytes().to_vec(),
+        Some(ContextType::Value(NaslValue::Number(d))) => d.to_be_bytes().to_vec(),
+        _ => Vec::<u8>::new(),
+    };
+
+    let ori_tcp_buf = <&[u8]>::clone(&ip.payload()).to_owned();
+    let mut ori_tcp: packet::tcp::MutableTcpPacket;
+
+    let mut new_buf: Vec<u8>;
+    let tcp_total_length: usize;
+    if !data.is_empty() {
+        //Prepare a new buffer with new size, copy the tcp header and set the new data
+        tcp_total_length = 20 + data.len();
+        new_buf = vec![0u8; tcp_total_length];
+        new_buf[..20].copy_from_slice(&ori_tcp_buf[..20]);
+        ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).unwrap();
+        ori_tcp.set_payload(&data);
+    } else {
+        // Copy the original tcp buffer into the new buffer
+        tcp_total_length = ip.payload().len();
+        new_buf = vec![0u8; tcp_total_length];
+        new_buf[..].copy_from_slice(&ori_tcp_buf);
+        ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).unwrap();
+    }
+
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("th_sport") {
+        ori_tcp.set_source(*x as u16);
+    };
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("th_dport") {
+        ori_tcp.set_destination(*x as u16);
+    };
+
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("th_seq") {
+        ori_tcp.set_sequence(*x as u32);
+    };
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("th_ack") {
+        ori_tcp.set_acknowledgement(*x as u32);
+    };
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("th_x2") {
+        ori_tcp.set_reserved(*x as u8);
+    };
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("th_off") {
+        ori_tcp.set_data_offset(*x as u8);
+    };
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("th_flags") {
+        ori_tcp.set_flags(*x as u16);
+    };
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("th_win") {
+        ori_tcp.set_window(*x as u16);
+    };
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("th_urp") {
+        ori_tcp.set_urgent_ptr(*x as u16);
+    };
+
+    // Set the checksum for the tcp segment
+    let chksum = match register.named("th_sum") {
+        Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
+        _ => {
+            let pkt = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+            let tcp_aux = TcpPacket::new(ori_tcp.packet()).unwrap();
+            ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
+        }
+    };
+    ori_tcp.set_checksum(chksum);
+
+    // Create a owned copy of the final tcp segment, which will be appended as payload to the IP packet.
+    let mut fin_tcp_buf: Vec<u8> = vec![0u8; tcp_total_length];
+    let buf_aux = <&[u8]>::clone(&ori_tcp.packet()).to_owned();
+    fin_tcp_buf.clone_from_slice(&buf_aux);
+
+    // Create a new IP packet with the original IP header, and the new TCP payload
+    let mut new_ip_buf = vec![0u8; iph_len];
+    new_ip_buf[..].copy_from_slice(&buf[..iph_len]);
+    new_ip_buf.append(&mut fin_tcp_buf.to_vec());
+
+    let l = new_ip_buf.len();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut new_ip_buf).unwrap();
+
+    // pnet will panic if the total length set in the ip datagram field does not much with the total lenght.
+    // Therefore, the total length is set to the right one before setting the payload.
+    // By default it was always updated, but if desired, the original length is set again after setting the payload.
+    let original_ip_len = pkt.get_total_length();
+    pkt.set_total_length(l as u16);
+    pkt.set_payload(&fin_tcp_buf);
+    match register.named("update_ip_len") {
+        Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
+            println!("set the ori again");
+            pkt.set_total_length(original_ip_len);
+        }
+        _ => (),
+    };
+
+    // New IP checksum
+    let chksum = checksum(&pkt.to_immutable());
+    pkt.set_checksum(chksum);
+
+    Ok(NaslValue::Data(pkt.packet().to_vec()))
 }
 
 /// This function adds TCP options to a IP datagram. The options are given as key value(s) pair with the positional argument list. The first positional argument is the identifier of the option, the next positional argument is the value for the option. For the option TCPOPT_TIMESTAMP (8) two values must be given.
@@ -669,7 +781,6 @@ fn dump_tcp_packet<K>(
     for tcp_seg in positional.iter() {
         match tcp_seg {
             NaslValue::Data(data) => {
-                display_packet(data);
                 let ip = match packet::ipv4::Ipv4Packet::new(data) {
                     Some(ip) => ip,
                     None => {
@@ -694,48 +805,48 @@ fn dump_tcp_packet<K>(
                         let flags = pkt.get_flags();
                         let mut f = String::new();
                         f.push_str("\tth_flags : ");
-                        if flags & pnet::packet::tcp::TcpFlags::FIN as u16
-                            == pnet::packet::tcp::TcpFlags::FIN as u16
+                        if flags & pnet::packet::tcp::TcpFlags::FIN
+                            == pnet::packet::tcp::TcpFlags::FIN
                         {
                             f.push_str("TH_FIN");
                         }
-                        if flags & pnet::packet::tcp::TcpFlags::SYN as u16
-                            == pnet::packet::tcp::TcpFlags::SYN as u16
+                        if flags & pnet::packet::tcp::TcpFlags::SYN
+                            == pnet::packet::tcp::TcpFlags::SYN
                         {
                             if !f.is_empty() {
-                                f.push_str("|")
+                                f.push('|')
                             };
                             f.push_str("TH_SYN");
                         }
-                        if flags & pnet::packet::tcp::TcpFlags::RST as u16
-                            == pnet::packet::tcp::TcpFlags::RST as u16
+                        if flags & pnet::packet::tcp::TcpFlags::RST
+                            == pnet::packet::tcp::TcpFlags::RST
                         {
                             if !f.is_empty() {
-                                f.push_str("|")
+                                f.push('|')
                             };
                             f.push_str("TH_RST");
                         }
-                        if flags & pnet::packet::tcp::TcpFlags::PSH as u16
-                            == pnet::packet::tcp::TcpFlags::PSH as u16
+                        if flags & pnet::packet::tcp::TcpFlags::PSH
+                            == pnet::packet::tcp::TcpFlags::PSH
                         {
                             if !f.is_empty() {
-                                f.push_str("|")
+                                f.push('|')
                             };
                             f.push_str("TH_PSH");
                         }
-                        if flags & pnet::packet::tcp::TcpFlags::ACK as u16
-                            == pnet::packet::tcp::TcpFlags::ACK as u16
+                        if flags & pnet::packet::tcp::TcpFlags::ACK
+                            == pnet::packet::tcp::TcpFlags::ACK
                         {
                             if !f.is_empty() {
-                                f.push_str("|")
+                                f.push('|')
                             };
                             f.push_str("TH_ACK");
                         }
-                        if flags & pnet::packet::tcp::TcpFlags::URG as u16
-                            == pnet::packet::tcp::TcpFlags::URG as u16
+                        if flags & pnet::packet::tcp::TcpFlags::URG
+                            == pnet::packet::tcp::TcpFlags::URG
                         {
                             if !f.is_empty() {
-                                f.push_str("|")
+                                f.push('|')
                             };
                             f.push_str("TH_URG");
                         }
@@ -766,7 +877,7 @@ fn dump_tcp_packet<K>(
                                 println!("\t\tTCPOPT_TIMESTAMP TSval: {:?}", p);
                             }
                         }
-                        display_packet(&data);
+                        display_packet(data);
                     }
                     None => {
                         return Err(FunctionErrorKind::WrongArgument(
