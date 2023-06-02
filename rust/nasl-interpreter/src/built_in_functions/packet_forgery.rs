@@ -18,8 +18,8 @@ use pnet::packet::{
     self,
     ip::IpNextHeaderProtocol,
     ipv4::{
-        checksum, Ipv4Option, Ipv4OptionNumber, Ipv4OptionPacket, MutableIpv4OptionPacket,
-        MutableIpv4Packet,
+        checksum, Ipv4Option, Ipv4OptionIterable, Ipv4OptionNumber, Ipv4OptionNumbers,
+        Ipv4OptionPacket, MutableIpv4OptionPacket, MutableIpv4Packet,
     },
     tcp::{
         ipv4_checksum, MutableTcpOptionPacket, TcpOption, TcpOptionNumber, TcpOptionNumbers,
@@ -28,7 +28,6 @@ use pnet::packet::{
     FromPacket, Packet,
 };
 
-use pnet::*;
 use socket2::{Domain, Protocol, Socket};
 
 macro_rules! custom_error {
@@ -422,20 +421,71 @@ fn insert_ip_options<K>(
         }
     };
 
-    let mut _pkt = packet::ipv4::MutableIpv4Packet::new(&mut buf).unwrap();
+    let code = match register.named("code") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x,
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "Usage : insert_ip_options(ip:<ip>, code:<code>, length:<len>, value:<value"
+                    .to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+    let length = match register.named("length") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x as usize,
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "Usage : insert_ip_options(ip:<ip>, code:<code>, length:<len>, value:<value"
+                    .to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+    let value = match register.named("value") {
+        Some(ContextType::Value(NaslValue::String(x))) => x.as_bytes(),
+        Some(ContextType::Value(NaslValue::Data(x))) => x,
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "Usage : insert_ip_options(ip:<ip>, code:<code>, length:<len>, value:<value"
+                    .to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
 
-    let mut opt_buf = [0u8; 3];
-    let mut ipv4_options = MutableIpv4OptionPacket::new(&mut opt_buf).unwrap();
+    // The pnet library does not have the implementation for create/modify TcpOptions.
+    // The TcpOption struct members are even private. Therefore, creating it manually.
+    // This is not possible:
+    //let opt = Ipv4Option{
+    //    copied: 1,
+    //    class: 0,
+    //    number: Ipv4OptionNumber(3),
+    //    length: opt_len.to_vec(),
+    //    data: opt_buf.to_vec(),
+    //};
 
-    ipv4_options.set_copied(1);
-    ipv4_options.set_class(0);
-    ipv4_options.set_number(Ipv4OptionNumber(3));
-    ipv4_options.set_length(&[3]);
-    ipv4_options.set_data(&[16]);
+    // Get the first byte from an i64
+    let codebyte = code.to_le_bytes()[0];
+    // Length is 2 bytes. Get the 2 bytes from the i64
+    let opt_len = &length.to_le_bytes()[..2];
+    let mut opt_buf = vec![0u8; length];
 
-    //pkt.set_options(ipv4_options);
+    opt_buf[..1].copy_from_slice(&vec![codebyte][..]);
+    opt_buf[1..3].copy_from_slice(opt_len);
+    opt_buf[3..].copy_from_slice(value);
 
-    Ok(NaslValue::Null)
+    let hl_valid_data = 20 + opt_buf.len();
+    let padding = 32 - hl_valid_data % 32;
+    let hl = hl_valid_data + padding;
+    let mut new_buf = vec![0u8; hl];
+    new_buf[..20].copy_from_slice(&buf[..20]);
+    new_buf[20..hl_valid_data].copy_from_slice(&opt_buf[..opt_buf.len()]);
+
+    let mut new_pkt = MutableIpv4Packet::new(&mut new_buf).unwrap();
+    let checksum = checksum(&new_pkt.to_immutable());
+    new_pkt.set_checksum(checksum);
+    new_pkt.set_header_length((hl / 4) as u8);
+    Ok(NaslValue::Data(new_pkt.packet().to_vec()))
 }
 
 /// Fills an IP datagram with TCP data. Note that the ip_p field is not updated. It returns the modified IP datagram. Its arguments are:
