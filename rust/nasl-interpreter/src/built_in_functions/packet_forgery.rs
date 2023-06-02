@@ -812,10 +812,179 @@ fn set_tcp_elements<K>(
 /// - 4: TCPOPT_SACK_PERMITTED, no value required.
 /// - 8: TCPOPT_TIMESTAMP, 8 bytes value for timestamp and echo timestamp, 4 bytes each one.
 fn insert_tcp_options<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let buf = match register.named("tcp") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "insert_tcp_options: missing <tcp> field".to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+    let iph_len = ip.get_header_length() as usize * 4; // the header lenght is given in 32-bits words
+    let ori_tcp_buf = <&[u8]>::clone(&ip.payload()).to_owned();
+    let mut ori_tcp: packet::tcp::MutableTcpPacket;
+
+    // Get the new data or use the existing one.
+    let data = match register.named("data") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        Some(ContextType::Value(NaslValue::String(d))) => d.as_bytes().to_vec(),
+        Some(ContextType::Value(NaslValue::Number(d))) => d.to_be_bytes().to_vec(),
+        _ => {
+            let tcp = TcpPacket::new(&ori_tcp_buf).unwrap();
+            tcp.payload().to_vec()
+        }
+    };
+
+    // Forge the options field
+    let positional = register.positional();
+    if positional.is_empty() {
+        return Ok(NaslValue::Null);
+    }
+
+    let mut opts: Vec<TcpOption> = vec![];
+    let mut opts_len = 0;
+    let mut opts_iter = positional.iter();
+    loop {
+        match opts_iter.next() {
+            Some(NaslValue::Number(o)) if *o == 2 => {
+                if let Some(NaslValue::Number(val)) = opts_iter.next() {
+                    let v = *val as u16;
+                    opts.push(TcpOption::mss(v));
+                    opts_len += 4;
+                } else {
+                    return Err(FunctionErrorKind::Diagnostic(
+                        "insert_tcp_options: invalid tcp option value".to_string(),
+                        Some(NaslValue::Null),
+                    ));
+                }
+            }
+            Some(NaslValue::Number(o)) if *o == 3 => {
+                if let Some(NaslValue::Number(val)) = opts_iter.next() {
+                    let v = *val as u8;
+                    opts.push(TcpOption::wscale(v));
+                    opts_len += 3;
+                } else {
+                    return Err(FunctionErrorKind::Diagnostic(
+                        "insert_tcp_options: invalid tcp option value".to_string(),
+                        Some(NaslValue::Null),
+                    ));
+                }
+            }
+
+            Some(NaslValue::Number(o)) if *o == 4 => {
+                opts.push(TcpOption::sack_perm());
+                opts_len += 2;
+            }
+            Some(NaslValue::Number(o)) if *o == 8 => {
+                if let Some(NaslValue::Number(val1)) = opts_iter.next() {
+                    if let Some(NaslValue::Number(val2)) = opts_iter.next() {
+                        let v1 = *val1 as u32;
+                        let v2 = *val2 as u32;
+                        opts.push(TcpOption::timestamp(v1, v2));
+                        opts_len += 10;
+                    } else {
+                        return Err(FunctionErrorKind::Diagnostic(
+                            "insert_tcp_options: invalid tcp option value".to_string(),
+                            Some(NaslValue::Null),
+                        ));
+                    }
+                } else {
+                    return Err(FunctionErrorKind::Diagnostic(
+                        "insert_tcp_options: invalid tcp option value".to_string(),
+                        Some(NaslValue::Null),
+                    ));
+                }
+            }
+            None => break,
+            _ => {
+                return Err(FunctionErrorKind::Diagnostic(
+                    "insert_tcp_options: invalid tcp option".to_string(),
+                    Some(NaslValue::Null),
+                ));
+            }
+        }
+    }
+
+    // Padding for completing a 32-bit word
+    if opts_len > 0 {
+        //Since there are options, we add 1 for the EOL
+        opts_len += 1;
+        let padding = 4 - (opts_len % 4);
+        for _i in 0..padding {
+            opts.push(TcpOption::nop());
+            opts_len += 1;
+        }
+    }
+
+    println!("{}", opts_len);
+    assert_eq!(opts_len % 4, 0);
+
+    let mut new_buf: Vec<u8>;
+    let tcp_total_length: usize;
+    //Prepare a new buffer with new size, copy the tcp header and set the new data
+    tcp_total_length = 20 + opts_len + data.len();
+    new_buf = vec![0u8; tcp_total_length];
+    new_buf[..20].copy_from_slice(&ori_tcp_buf[..20]);
+    ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).unwrap();
+
+    // At this point, opts len is a 4bytes multiple and the ofset is expressed in 32bits words
+    ori_tcp.set_data_offset(5 + opts_len as u8 / 4);
+    if !opts.is_empty() {
+        ori_tcp.set_options(&opts);
+    }
+    if !data.is_empty() {
+        ori_tcp.set_payload(&data);
+    }
+
+    // Set the checksum for the tcp segment
+    let chksum = match register.named("th_sum") {
+        Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
+        _ => {
+            let pkt = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+            let tcp_aux = TcpPacket::new(ori_tcp.packet()).unwrap();
+            ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
+        }
+    };
+    ori_tcp.set_checksum(chksum);
+
+    // Create a owned copy of the final tcp segment, which will be appended as payload to the IP packet.
+    let mut fin_tcp_buf: Vec<u8> = vec![0u8; tcp_total_length];
+    let buf_aux = <&[u8]>::clone(&ori_tcp.packet()).to_owned();
+    fin_tcp_buf.clone_from_slice(&buf_aux);
+
+    // Create a new IP packet with the original IP header, and the new TCP payload
+    let mut new_ip_buf = vec![0u8; iph_len];
+    new_ip_buf[..].copy_from_slice(&buf[..iph_len]);
+    new_ip_buf.append(&mut fin_tcp_buf.to_vec());
+
+    let l = new_ip_buf.len();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut new_ip_buf).unwrap();
+
+    // pnet will panic if the total length set in the ip datagram field does not much with the total lenght.
+    // Therefore, the total length is set to the right one before setting the payload.
+    // By default it was always updated, but if desired, the original length is set again after setting the payload.
+    let original_ip_len = pkt.get_total_length();
+    pkt.set_total_length(l as u16);
+    pkt.set_payload(&fin_tcp_buf);
+    match register.named("update_ip_len") {
+        Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
+            println!("set the ori again");
+            pkt.set_total_length(original_ip_len);
+        }
+        _ => (),
+    };
+
+    // New IP checksum
+    let chksum = checksum(&pkt.to_immutable());
+    pkt.set_checksum(chksum);
+
+    Ok(NaslValue::Data(pkt.packet().to_vec()))
 }
 
 /// Receive a list of IPv4 datagrams and print their TCP part in a readable format in the screen.
