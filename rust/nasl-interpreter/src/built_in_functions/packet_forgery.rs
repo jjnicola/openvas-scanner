@@ -664,10 +664,68 @@ fn get_tcp_element<K>(
 ///  
 /// The returned option depends on the given *option* parameter. It is either an int for option 2, 3 and 4 or an array containing the two values for option 8.
 fn get_tcp_option<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let buf = match register.named("tcp") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "get_tcp_option: missing <tcp> field".to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+    let tcp = packet::tcp::TcpPacket::new(ip.payload()).unwrap();
+
+    let mut max_seg: i64 = 0;
+    let mut window: i64 = 0;
+    let mut sack_permitted: i64 = 0;
+    let mut timestamps: Vec<NaslValue> = vec![NaslValue::Number(0), NaslValue::Number(0)];
+    for opt in tcp.get_options_iter() {
+        if opt.get_number() == TcpOptionNumbers::MSS {
+            let mut val = [0u8; 2];
+            val[..2].copy_from_slice(&opt.payload()[..2]);
+            max_seg = i16::from_be_bytes(val) as i64;
+        }
+        if opt.get_number() == TcpOptionNumbers::WSCALE {
+            let mut val = [0u8; 1];
+            val[..1].copy_from_slice(&opt.payload()[..1]);
+            window = val[0] as i64;
+        }
+        if opt.get_number() == TcpOptionNumbers::SACK_PERMITTED {
+            sack_permitted = 1 as i64;
+        }
+        if opt.get_number() == TcpOptionNumbers::TIMESTAMPS {
+            let mut t1 = [0u8; 4];
+            let mut t2 = [0u8; 4];
+            t1[..4].copy_from_slice(&opt.payload()[..4]);
+            t2[..4].copy_from_slice(&opt.payload()[4..]);
+            let t1_val = i32::from_be_bytes(t1) as i64;
+            let t2_val = i32::from_be_bytes(t2) as i64;
+
+            timestamps = vec![NaslValue::Number(t1_val), NaslValue::Number(t2_val)];
+        }
+    }
+
+    match register.named("option") {
+        Some(ContextType::Value(NaslValue::Number(el))) => match el {
+            2 => Ok(NaslValue::Number(max_seg)),
+            3 => Ok(NaslValue::Number(window)),
+            4 => Ok(NaslValue::Number(sack_permitted)),
+            8 => Ok(NaslValue::Array(timestamps)),
+            _ => Err(FunctionErrorKind::Diagnostic(
+                "get_tcp_option: invalid option".to_string(),
+                Some(NaslValue::Null),
+            )),
+        },
+        _ => Err(FunctionErrorKind::Diagnostic(
+            "get_tcp_option: missing option argument".to_string(),
+            Some(NaslValue::Null),
+        )),
+    }
 }
 
 /// This function modifies the TCP fields of an IP datagram. Its arguments are:
@@ -1459,6 +1517,18 @@ mod tests {
                      ip_off : 0,
                      ip_src : 192.168.0.1,
                      ip_dst : 192.168.0.12);
+
+        tcp_packet = forge_tcp_packet(ip:       ip_packet,
+                              th_sport: 5080,
+                              th_dport: 80,
+                              th_seq:   1000,
+                              th_ack:   0,
+                              th_x2:    0,
+                              th_off:   5,
+                              th_flags: 33,
+                              th_win:   0,
+                              th_sum:   0,
+                              th_urp:   0);
         "###;
         let mut register = Register::default();
         let binding = DefaultContext::default();
@@ -1470,6 +1540,14 @@ mod tests {
             parser.next(),
             Some(Ok(NaslValue::Data(vec![
                 69, 0, 0, 20, 210, 4, 0, 0, 255, 6, 104, 129, 192, 168, 0, 1, 192, 168, 0, 12
+            ])))
+        );
+
+        assert_eq!(
+            parser.next(),
+            Some(Ok(NaslValue::Data(vec![
+                69, 0, 0, 40, 210, 4, 0, 0, 255, 6, 104, 109, 192, 168, 0, 1, 192, 168, 0, 12, 19,
+                216, 0, 80, 0, 0, 3, 232, 0, 0, 0, 0, 80, 33, 0, 0, 22, 86, 0, 0
             ])))
         );
     }
@@ -1502,5 +1580,74 @@ mod tests {
         assert_eq!(parser.next(), Some(Ok(NaslValue::Number(255))));
         parser.next();
         assert_eq!(parser.next(), Some(Ok(NaslValue::Number(127))));
+    }
+
+    #[test]
+    fn ip_opts() {
+        let code = r###"
+        ip_packet = forge_ip_packet(ip_v : 4,
+                     ip_hl : 5,
+                     ip_tos : 0,
+                     ip_len : 20,
+                     ip_id : 1234,
+                     ip_p : 0x06,
+                     ip_ttl : 255,
+                     ip_off : 0,
+                     ip_src : 192.168.0.1,
+                     ip_dst : 192.168.0.12);
+
+        ip_packet = insert_ip_options(ip: ip_packet, code: 131, length:5, value: "12");
+        opt = get_ip_element(ip: ip_packet, element: "ip_hl");
+        "###;
+        let mut register = Register::default();
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+        parser.next();
+        parser.next();
+        assert_eq!(parser.next(), Some(Ok(NaslValue::Number(8))));
+    }
+
+    #[test]
+    fn tcp_opts() {
+        let code = r###"
+        ip_packet = forge_ip_packet(ip_v : 4,
+                     ip_hl : 5,
+                     ip_tos : 0,
+                     ip_len : 20,
+                     ip_id : 1234,
+                     ip_p : 0x06,
+                     ip_ttl : 255,
+                     ip_off : 0,
+                     ip_src : 192.168.0.1,
+                     ip_dst : 192.168.0.12);
+
+        tcp_packet = forge_tcp_packet(ip:       ip_packet,
+                              th_sport: 5080,
+                              th_dport: 80,
+                              th_seq:   1000,
+                              th_ack:   0,
+                              th_x2:    0,
+                              th_off:   5,
+                              th_flags: 33,
+                              th_win:   0,
+                              th_sum:   0,
+                              th_urp:   0);
+
+        tcp_packet = insert_tcp_options(tcp: tcp_packet, 3, 2);
+        opt = get_tcp_option(tcp: tcp_packet, option: 3);
+        "###;
+        let mut register = Register::default();
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+        parser.next();
+        parser.next();
+        parser.next();
+        assert_eq!(parser.next(), Some(Ok(NaslValue::Number(2))));
     }
 }
