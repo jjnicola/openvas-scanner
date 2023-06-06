@@ -518,6 +518,7 @@ fn forge_tcp_packet<K>(
             ));
         }
     };
+    let original_ip_len = ip_buf.len();
 
     let data = match register.named("data") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
@@ -589,6 +590,12 @@ fn forge_tcp_packet<K>(
     let l = ip_buf.len();
     let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
     pkt.set_total_length(l as u16);
+    match register.named("update_ip_len") {
+        Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
+            pkt.set_total_length(original_ip_len as u16);
+        }
+        _ => (),
+    };
     let chksum = checksum(&pkt.to_immutable());
     pkt.set_checksum(chksum);
 
