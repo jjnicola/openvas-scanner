@@ -22,9 +22,10 @@ use pnet::packet::{
         Ipv4OptionPacket, MutableIpv4OptionPacket, MutableIpv4Packet,
     },
     tcp::{
-        ipv4_checksum, MutableTcpOptionPacket, TcpOption, TcpOptionNumber, TcpOptionNumbers,
-        TcpOptionPacket, TcpPacket,
+        MutableTcpOptionPacket, TcpOption, TcpOptionNumber, TcpOptionNumbers, TcpOptionPacket,
+        TcpPacket, *,
     },
+    udp::{UdpPacket, *},
     FromPacket, Packet,
 };
 
@@ -579,7 +580,7 @@ fn forge_tcp_packet<K>(
         _ => {
             let pkt = packet::ipv4::Ipv4Packet::new(&ip_buf).unwrap();
             let tcp_aux = TcpPacket::new(tcp_seg.packet()).unwrap();
-            ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
+            pnet::packet::tcp::ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
         }
     };
 
@@ -829,7 +830,7 @@ fn set_tcp_elements<K>(
         _ => {
             let pkt = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
             let tcp_aux = TcpPacket::new(ori_tcp.packet()).unwrap();
-            ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
+            pnet::packet::tcp::ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
         }
     };
     ori_tcp.set_checksum(chksum);
@@ -1013,7 +1014,7 @@ fn insert_tcp_options<K>(
         _ => {
             let pkt = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
             let tcp_aux = TcpPacket::new(ori_tcp.packet()).unwrap();
-            ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
+            pnet::packet::tcp::ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
         }
     };
     ori_tcp.set_checksum(chksum);
@@ -1193,10 +1194,77 @@ fn dump_tcp_packet<K>(
 
 /// Returns the modified IP datagram or NULL on error.
 fn forge_udp_packet<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let mut ip_buf = match register.named("ip") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "set_ip_element: missing <ip> field".to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+    let original_ip_len = ip_buf.len();
+
+    let data = match register.named("data") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        Some(ContextType::Value(NaslValue::String(d))) => d.as_bytes().to_vec(),
+        Some(ContextType::Value(NaslValue::Number(d))) => d.to_be_bytes().to_vec(),
+        _ => Vec::<u8>::new(),
+    };
+
+    //udp lenght + data lenght
+    let total_length = 20 + data.len();
+    let mut buf = vec![0; total_length];
+    let mut udp_datagram = packet::udp::MutableUdpPacket::new(&mut buf).unwrap();
+
+    if !data.is_empty() {
+        udp_datagram.set_payload(&data);
+    }
+
+    match register.named("uh_sport") {
+        Some(ContextType::Value(NaslValue::Number(x))) => udp_datagram.set_source(*x as u16),
+        _ => udp_datagram.set_source(0_u16),
+    };
+    match register.named("uh_dport") {
+        Some(ContextType::Value(NaslValue::Number(x))) => udp_datagram.set_destination(*x as u16),
+        _ => udp_datagram.set_destination(0_u16),
+    };
+
+    match register.named("uh_len") {
+        Some(ContextType::Value(NaslValue::Number(x))) => udp_datagram.set_length(*x as u16),
+        _ => udp_datagram.set_length(8u16),
+    };
+
+    let chksum = match register.named("th_sum") {
+        Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
+        _ => {
+            let pkt = packet::ipv4::Ipv4Packet::new(&ip_buf).unwrap();
+            let udp_aux = UdpPacket::new(udp_datagram.packet()).unwrap();
+            pnet::packet::udp::ipv4_checksum(&udp_aux, &pkt.get_source(), &pkt.get_destination())
+        }
+    };
+
+    let mut udp_datagram = packet::udp::MutableUdpPacket::new(&mut buf).unwrap();
+    udp_datagram.set_checksum(chksum);
+
+    ip_buf.append(&mut buf);
+    let l = ip_buf.len();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
+    pkt.set_total_length(l as u16);
+    match register.named("update_ip_len") {
+        Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
+            println!("set the ori again");
+            pkt.set_total_length(original_ip_len as u16);
+        }
+        _ => (),
+    };
+    let chksum = checksum(&pkt.to_immutable());
+    pkt.set_checksum(chksum);
+
+    Ok(NaslValue::Data(ip_buf))
 }
 
 /// This function modifies the UDP fields of an IP datagram. Its arguments are:
@@ -1656,5 +1724,48 @@ mod tests {
         parser.next();
         parser.next();
         assert_eq!(parser.next(), Some(Ok(NaslValue::Number(2))));
+    }
+
+    #[test]
+    fn forge_udp() {
+        let code = r###"
+        ip_packet = forge_ip_packet(ip_v : 4,
+                             ip_hl : 5,
+                             ip_tos : 0,
+                             ip_len : 20,
+                             ip_id : 1234,
+                             ip_p : 0x11,
+                             ip_ttl : 255,
+                             ip_off : 0,
+                             ip_src : 192.168.0.1,
+                             ip_dst : 192.168.0.10);
+
+        udp_packet = forge_udp_packet(ip:       ip_packet,
+                                      uh_sport: 5080,
+                                      uh_dport: 80,
+                                      uh_len:   8,
+                                      th_sum:   0,
+                                      data: "1234");
+        "###;
+        let mut register = Register::default();
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+        assert_eq!(
+            parser.next(),
+            Some(Ok(NaslValue::Data(vec![
+                69, 0, 0, 20, 210, 4, 0, 0, 255, 17, 104, 120, 192, 168, 0, 1, 192, 168, 0, 10
+            ])))
+        );
+
+        assert_eq!(
+            parser.next(),
+            Some(Ok(NaslValue::Data(vec![
+                69, 0, 0, 44, 210, 4, 0, 0, 255, 17, 104, 96, 192, 168, 0, 1, 192, 168, 0, 10, 19,
+                216, 0, 80, 0, 8, 5, 228, 49, 50, 51, 52, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ])))
+        );
     }
 }
