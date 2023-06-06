@@ -1366,9 +1366,51 @@ fn set_udp_elements<K>(
 
 /// Receive a list of IPv4 datagrams and print their UDP part in a readable format in the screen.
 fn dump_udp_packet<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
+    let positional = register.positional();
+    if positional.is_empty() {
+        return Ok(NaslValue::Null);
+    }
+
+    for udp_datagram in positional.iter() {
+        match udp_datagram {
+            NaslValue::Data(data) => {
+                let ip = match packet::ipv4::Ipv4Packet::new(data) {
+                    Some(ip) => ip,
+                    None => {
+                        return Err(FunctionErrorKind::Diagnostic(
+                            "Usage : dump_udp_packet_options(udp)".to_string(),
+                            Some(NaslValue::Null),
+                        ));
+                    }
+                };
+
+                match packet::udp::UdpPacket::new(ip.payload()) {
+                    Some(pkt) => {
+                        println!("------\n");
+                        println!("\tuh_sport  : {:?}", pkt.get_source());
+                        println!("\tuh_dport   : {:?}", pkt.get_destination());
+                        println!("\tuh_len : {:?}", pkt.get_length());
+                        println!("\tuh_sum : {:?}", pkt.get_checksum());
+                        display_packet(data);
+                    }
+                    None => {
+                        return Err(FunctionErrorKind::WrongArgument(
+                            "valid ip packet".to_string(),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(FunctionErrorKind::WrongArgument(
+                    "valid ip packet".to_string(),
+                ));
+            }
+        }
+    }
+
     Ok(NaslValue::Null)
 }
 
