@@ -1283,7 +1283,7 @@ fn set_udp_elements<K>(
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
             return Err(FunctionErrorKind::Diagnostic(
-                "get_udp_element: missing <udp> field".to_string(),
+                "set_udp_element: missing <udp> field".to_string(),
                 Some(NaslValue::Null),
             ));
         }
@@ -1425,10 +1425,36 @@ fn dump_udp_packet<K>(
 /// - uh_sum
 /// - data
 fn get_udp_element<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let buf = match register.named("udp") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "get_udp_element: missing <udp> field".to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+    let udp = packet::udp::UdpPacket::new(ip.payload()).unwrap();
+
+    match register.named("element") {
+        Some(ContextType::Value(NaslValue::String(el))) => match el.as_str() {
+            "uh_sport" => Ok(NaslValue::Number(udp.get_source() as i64)),
+            "uh_dport" => Ok(NaslValue::Number(udp.get_destination() as i64)),
+            "uh_len" => Ok(NaslValue::Number(udp.get_length() as i64)),
+            "uh_sum" => Ok(NaslValue::Number(udp.get_checksum() as i64)),
+            "data" => Ok(NaslValue::Data(udp.payload().to_vec())),
+            _ => Ok(NaslValue::Null),
+        },
+        _ => Err(FunctionErrorKind::Diagnostic(
+            "get_udp_element: missing valid udp element".to_string(),
+            Some(NaslValue::Null),
+        )),
+    }
 }
 
 /// Fills an IP datagram with ICMP data. Note that the ip_p field is not updated. It returns the modified IP datagram. Its arguments are:
