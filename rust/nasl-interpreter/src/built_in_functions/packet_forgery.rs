@@ -1276,10 +1276,92 @@ fn forge_udp_packet<K>(
 /// - uh_sum: is the UDP checksum. Although it is not compulsory, the right value is computed by default.
 /// - uh_ulen: is the data length. By default it is set to the length the data argument plus the size of the UDP header.
 fn set_udp_elements<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let buf = match register.named("udp") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "get_udp_element: missing <udp> field".to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+    let iph_len = ip.get_header_length() as usize * 4; // the header lenght is given in 32-bits words
+
+    let data = match register.named("data") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        Some(ContextType::Value(NaslValue::String(d))) => d.as_bytes().to_vec(),
+        Some(ContextType::Value(NaslValue::Number(d))) => d.to_be_bytes().to_vec(),
+        _ => Vec::<u8>::new(),
+    };
+
+    let ori_udp_buf = <&[u8]>::clone(&ip.payload()).to_owned();
+    let mut ori_udp: packet::udp::MutableUdpPacket;
+
+    let mut new_buf: Vec<u8>;
+    let udp_total_length: usize;
+    if !data.is_empty() {
+        //Prepare a new buffer with new size, copy the udp header and set the new data
+        udp_total_length = 8 + data.len();
+        new_buf = vec![0u8; udp_total_length];
+        new_buf[..8].copy_from_slice(&ori_udp_buf[..8]);
+        ori_udp = packet::udp::MutableUdpPacket::new(&mut new_buf).unwrap();
+        ori_udp.set_payload(&data);
+    } else {
+        // Copy the original udp buffer into the new buffer
+        udp_total_length = ip.payload().len();
+        new_buf = vec![0u8; udp_total_length];
+        new_buf[..].copy_from_slice(&ori_udp_buf);
+        ori_udp = packet::udp::MutableUdpPacket::new(&mut new_buf).unwrap();
+    }
+
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("uh_sport") {
+        ori_udp.set_source(*x as u16);
+    };
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("uh_dport") {
+        ori_udp.set_destination(*x as u16);
+    };
+
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("uh_len") {
+        ori_udp.set_length(*x as u16);
+    };
+
+    // Set the checksum for the udp segment
+    let chksum = match register.named("uh_sum") {
+        Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
+        _ => {
+            let pkt = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+            let udp_aux = UdpPacket::new(ori_udp.packet()).unwrap();
+            pnet::packet::udp::ipv4_checksum(&udp_aux, &pkt.get_source(), &pkt.get_destination())
+        }
+    };
+    ori_udp.set_checksum(chksum);
+
+    // Create a owned copy of the final udp segment, which will be appended as payload to the IP packet.
+    let mut fin_udp_buf: Vec<u8> = vec![0u8; udp_total_length];
+    let buf_aux = <&[u8]>::clone(&ori_udp.packet()).to_owned();
+    fin_udp_buf.clone_from_slice(&buf_aux);
+
+    // Create a new IP packet with the original IP header, and the new UDP payload
+    let mut new_ip_buf = vec![0u8; iph_len];
+    new_ip_buf[..].copy_from_slice(&buf[..iph_len]);
+    new_ip_buf.append(&mut fin_udp_buf.to_vec());
+
+    let l = new_ip_buf.len();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut new_ip_buf).unwrap();
+
+    pkt.set_total_length(l as u16);
+    pkt.set_payload(&fin_udp_buf);
+
+    // New IP checksum
+    let chksum = checksum(&pkt.to_immutable());
+    pkt.set_checksum(chksum);
+
+    Ok(NaslValue::Data(pkt.packet().to_vec()))
 }
 
 /// Receive a list of IPv4 datagrams and print their UDP part in a readable format in the screen.
@@ -1763,7 +1845,8 @@ mod tests {
         assert_eq!(
             parser.next(),
             Some(Ok(NaslValue::Data(vec![
-                69, 0, 0, 32, 210, 4, 0, 0, 255, 17, 104, 108, 192, 168, 0, 1, 192, 168, 0, 10, 19, 216, 0, 80, 0, 8, 5, 240, 49, 50, 51, 52
+                69, 0, 0, 32, 210, 4, 0, 0, 255, 17, 104, 108, 192, 168, 0, 1, 192, 168, 0, 10, 19,
+                216, 0, 80, 0, 8, 5, 240, 49, 50, 51, 52
             ])))
         );
     }
