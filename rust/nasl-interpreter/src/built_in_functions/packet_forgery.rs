@@ -1216,7 +1216,7 @@ fn forge_udp_packet<K>(
     };
 
     //udp lenght + data lenght
-    let total_length = 20 + data.len();
+    let total_length = 8 + data.len();
     let mut buf = vec![0; total_length];
     let mut udp_datagram = packet::udp::MutableUdpPacket::new(&mut buf).unwrap();
 
@@ -1763,8 +1763,7 @@ mod tests {
         assert_eq!(
             parser.next(),
             Some(Ok(NaslValue::Data(vec![
-                69, 0, 0, 44, 210, 4, 0, 0, 255, 17, 104, 96, 192, 168, 0, 1, 192, 168, 0, 10, 19,
-                216, 0, 80, 0, 8, 5, 228, 49, 50, 51, 52, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                69, 0, 0, 32, 210, 4, 0, 0, 255, 17, 104, 108, 192, 168, 0, 1, 192, 168, 0, 10, 19, 216, 0, 80, 0, 8, 5, 240, 49, 50, 51, 52
             ])))
         );
     }
