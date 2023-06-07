@@ -1563,10 +1563,65 @@ fn forge_icmp_packet<K>(
 /// - icmp_chsum
 /// - icmp_data
 fn get_icmp_element<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let buf = match register.named("icmp") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "get_icmp_element: missing <icmp> field".to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+    let icmp = packet::icmp::IcmpPacket::new(ip.payload()).unwrap();
+
+    match register.named("element") {
+        Some(ContextType::Value(NaslValue::String(el))) => match el.as_str() {
+            "icmp_code" => Ok(NaslValue::Number(icmp.get_icmp_code().0 as i64)),
+            "icmp_type" => Ok(NaslValue::Number(icmp.get_icmp_type().0 as i64)),
+            "icmp_cksum" => Ok(NaslValue::Number(icmp.get_checksum() as i64)),
+            "icmp_id" => {
+                if icmp.payload().len() >= 4 {
+                    let pl = icmp.payload();
+                    let mut id = [0u8; 8];
+                    id[..2].copy_from_slice(&pl[..2]);
+                    return Ok(NaslValue::Number(i64::from_le_bytes(id)));
+                }
+                else {
+                    return Ok(NaslValue::Number(0));
+                };
+            }
+            "icmp_seq" => {
+                if icmp.payload().len() >= 4 {
+                    let pl = icmp.payload();
+                    let mut seq = [0u8; 8];
+                    seq[0..2].copy_from_slice(&pl[2..4]);
+                    return Ok(NaslValue::Number(i64::from_le_bytes(seq)));
+                }
+                else {
+                    return Ok(NaslValue::Number(0));
+                };
+            }
+            "data" => {
+                if icmp.payload().len() > 4 {
+                    let buf = icmp.payload();
+                    return Ok(NaslValue::Data(buf[4..].to_vec()));
+                }
+                else {
+                    return Ok(NaslValue::Null);
+                }
+            }
+            _ => Ok(NaslValue::Null),
+        },
+        _ => Err(FunctionErrorKind::Diagnostic(
+            "get_icmp_element: missing valid icmp element".to_string(),
+            Some(NaslValue::Null),
+        )),
+    }
 }
 
 /// Receive a list of IPv4 ICMP packets and print them in a readable format in the screen.
