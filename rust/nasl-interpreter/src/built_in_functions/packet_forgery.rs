@@ -1996,4 +1996,40 @@ mod tests {
             ])))
         );
     }
+
+    #[test]
+    fn forge_icmp() {
+        let code = r###"
+            ip_packet = forge_ip_packet(ip_v : 4,
+                     ip_hl : 5,
+                     ip_tos : 0,
+                     ip_len : 20,
+                     ip_id : 1234,
+                     ip_p : 0x01, #IPPROTO_ICMP
+                     ip_ttl : 255,
+                     ip_off : 0,
+                     ip_src : 192.168.0.1,
+                     ip_dst : 192.168.0.10);
+            icmp = forge_icmp_packet(ip: ip_packet,
+                     icmp_type: 8,
+                     icmp_code: 0,
+                     icmp_seq:   1,
+                     icmp_id:   1,
+                     data: "1234");
+        "###;
+        let mut register = Register::default();
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+        parser.next();
+        assert_eq!(
+            parser.next(),
+            Some(Ok(NaslValue::Data(vec![
+                69, 0, 0, 32, 210, 4, 0, 0, 255, 1, 104, 124, 192, 168, 0, 1, 192, 168, 0, 10, 8,
+                0, 145, 153, 1, 0, 1, 0, 49, 50, 51, 52
+            ])))
+        );
+    }
 }
