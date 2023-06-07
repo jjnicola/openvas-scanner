@@ -16,6 +16,7 @@ use crate::{
 use pcap::Capture;
 use pnet::packet::{
     self,
+    icmp::*,
     ip::IpNextHeaderProtocol,
     ipv4::{
         checksum, Ipv4Option, Ipv4OptionIterable, Ipv4OptionNumber, Ipv4OptionNumbers,
@@ -1467,10 +1468,87 @@ fn get_udp_element<K>(
 /// - *icmp_type*: ICMP type. 0 by default.
 /// - *update_ip_len*: If this flag is set, NASL will recompute the size field of the IP datagram. Default: True.
 fn forge_icmp_packet<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let mut ip_buf = match register.named("ip") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "set_ip_element: missing <ip> field".to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+    let original_ip_len = ip_buf.len();
+
+    let data = match register.named("data") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        Some(ContextType::Value(NaslValue::String(d))) => d.as_bytes().to_vec(),
+        Some(ContextType::Value(NaslValue::Number(d))) => d.to_be_bytes().to_vec(),
+        _ => Vec::<u8>::new(),
+    };
+
+    let total_length = 8 + data.len();
+    let mut buf = vec![0; total_length];
+    let mut icmp_pkt = packet::icmp::MutableIcmpPacket::new(&mut buf).unwrap();
+
+    match register.named("icmp_type") {
+        Some(ContextType::Value(NaslValue::Number(x))) => {
+            icmp_pkt.set_icmp_type(packet::icmp::IcmpType::new(*x as u8))
+        }
+        _ => icmp_pkt.set_icmp_type(packet::icmp::IcmpTypes::EchoReply),
+    };
+
+    match register.named("icmp_code") {
+        Some(ContextType::Value(NaslValue::Number(x))) => {
+            icmp_pkt.set_icmp_code(packet::icmp::IcmpCode::new(*x as u8))
+        }
+        _ => icmp_pkt.set_icmp_code(packet::icmp::IcmpCode::new(0u8)),
+    };
+    match register.named("icmp_id") {
+        Some(ContextType::Value(NaslValue::Number(x))) => {
+            buf[4..6].copy_from_slice(&x.to_le_bytes()[0..2]);
+        }
+        _ => (),
+    };
+    match register.named("icmp_seq") {
+        Some(ContextType::Value(NaslValue::Number(x))) => {
+            buf[6..8].copy_from_slice(&x.to_le_bytes()[0..2]);
+        }
+        _ => (),
+    };
+
+    if !data.is_empty() {
+        buf[8..].copy_from_slice(&data[0..]);
+    }
+
+    let chksum = match register.named("icmp_cksum") {
+        Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
+        _ => {
+            let icmp_aux = IcmpPacket::new(&buf).unwrap();
+            pnet::packet::icmp::checksum(&icmp_aux)
+        }
+    };
+
+    let mut icmp_pkt = packet::icmp::MutableIcmpPacket::new(&mut buf).unwrap();
+    icmp_pkt.set_checksum(chksum);
+
+    ip_buf.append(&mut buf);
+    let l = ip_buf.len();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
+    pkt.set_total_length(l as u16);
+    match register.named("update_ip_len") {
+        Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
+            println!("set the ori again");
+            pkt.set_total_length(original_ip_len as u16);
+        }
+        _ => (),
+    };
+    let chksum = checksum(&pkt.to_immutable());
+    pkt.set_checksum(chksum);
+
+    Ok(NaslValue::Data(ip_buf))
 }
 
 /// Get an ICMP element from a IP datagram. It returns a data block or an integer, according to the type of the element. Its arguments are:
