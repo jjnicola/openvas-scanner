@@ -1200,6 +1200,8 @@ dependencies = [
  "pcap",
  "pnet",
  "pnet_base",
+ "pnet_macros",
+ "pnet_macros_support",
  "regex",
  "ripemd",
  "sha1",

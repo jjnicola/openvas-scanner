@@ -27,7 +27,7 @@ use pnet::packet::{
         TcpPacket, *,
     },
     udp::{UdpPacket, *},
-    FromPacket, Packet,
+    FromPacket, Packet, PrimitiveValues,
 };
 
 use socket2::{Domain, Protocol, Socket};
@@ -1632,7 +1632,7 @@ fn dump_icmp_packet<K>(
     }
 
     for icmp_pkt in positional.iter() {
-        let mut buf = match icmp_pkt {
+        let buf = match icmp_pkt {
             NaslValue::Data(d) => d.clone(),
             _ => {
                 continue;
@@ -1676,6 +1676,67 @@ fn dump_icmp_packet<K>(
     Ok(NaslValue::Null)
 }
 
+// IGMP
+
+use pnet_macros::packet;
+use pnet_macros_support::packet::*;
+use pnet_macros_support::types::*;
+
+/// Represents the "IGMP type" header field.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct IgmpType(pub u8);
+
+impl IgmpType {
+    /// Create a new `IgmpType` instance.
+    pub fn new(val: u8) -> IgmpType {
+        IgmpType(val)
+    }
+}
+
+impl PrimitiveValues for IgmpType {
+    type T = (u8,);
+    fn to_primitive_values(&self) -> (u8,) {
+        (self.0,)
+    }
+}
+
+/// Represents a generic IGMP packet.
+#[packet]
+pub struct Igmp {
+    #[construct_with(u8)]
+    pub igmp_type: IgmpType,
+    #[construct_with(u8)]
+    pub igmp_timeout: u8,
+    pub checksum: u16be,
+    #[construct_with(u8, u8, u8, u8)]
+    pub group_address: Ipv4Addr,
+    #[payload]
+    pub payload: Vec<u8>,
+}
+
+/// The enumeration of the recognized IGMP types.
+#[allow(non_snake_case)]
+#[allow(non_upper_case_globals)]
+pub mod IgmpTypes {
+    use super::IgmpType;
+    /// IGMP type for "Membership Query"
+    pub const MembershipQuery: IgmpType = IgmpType(0x11);
+    /// IGMP type for "IGMPv1 Membership Report"
+    pub const IGMPv1MembershipReport: IgmpType = IgmpType(0x12);
+    /// IGMP type for "IGMPv2 Membership Report"
+    pub const IGMPv2MembershipReport: IgmpType = IgmpType(0x16);
+    /// IGMP type for "IGMPv3 Membership Report"
+    pub const IGMPv3MembershipReport: IgmpType = IgmpType(0x22);
+    /// IGMP type for Leave Group"
+    pub const LeaveGroup: IgmpType = IgmpType(0x17);
+    /// OpenVAS IGMP default type
+    pub const Default: IgmpType = IgmpType(0x00);
+}
+/// Calculates a checksum of an ICMP packet.
+pub fn igmp_checksum(packet: &IgmpPacket) -> u16be {
+    pnet::packet::util::checksum(packet.packet(), 1)
+}
+
 /// Fills an IP datagram with IGMP data. Note that the ip_p field is not updated. It returns the modified IP datagram. Its arguments are:
 /// - ip: IP datagram that is updated.
 /// - data: Payload.
@@ -1684,10 +1745,86 @@ fn dump_icmp_packet<K>(
 /// - type: IGMP type. 0 by default.
 /// - update_ip_len: If this flag is set, NASL will recompute the size field of the IP datagram. Default: True.
 fn forge_igmp_packet<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let mut ip_buf = match register.named("ip") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        _ => {
+            return Err(FunctionErrorKind::Diagnostic(
+                "set_ip_element: missing <ip> field".to_string(),
+                Some(NaslValue::Null),
+            ));
+        }
+    };
+    let original_ip_len = ip_buf.len();
+
+    let data = match register.named("data") {
+        Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
+        Some(ContextType::Value(NaslValue::String(d))) => d.as_bytes().to_vec(),
+        Some(ContextType::Value(NaslValue::Number(d))) => d.to_be_bytes().to_vec(),
+        _ => Vec::<u8>::new(),
+    };
+
+    let total_length = 8 + data.len();
+    let mut buf = vec![0; total_length];
+    let mut igmp_pkt = MutableIgmpPacket::new(&mut buf).unwrap();
+
+    match register.named("type") {
+        Some(ContextType::Value(NaslValue::Number(x))) => {
+            igmp_pkt.set_igmp_type(IgmpType::new(*x as u8))
+        }
+        _ => igmp_pkt.set_igmp_type(IgmpTypes::Default),
+    };
+
+    match register.named("code") {
+        Some(ContextType::Value(NaslValue::Number(x))) => {
+            igmp_pkt.set_igmp_timeout((*x as u8).to_be())
+        }
+        _ => igmp_pkt.set_igmp_timeout(0u8),
+    };
+    match register.named("group") {
+        Some(ContextType::Value(NaslValue::String(x))) => {
+            match x.parse::<Ipv4Addr>() {
+                Ok(ip) => {
+                    igmp_pkt.set_group_address(ip);
+                }
+                Err(e) => {
+                    return Err(FunctionErrorKind::Diagnostic(
+                        format!("forge_igmp_packet invalid address group: {}", e),
+                        Some(NaslValue::Null),
+                    ));
+                }
+            };
+        }
+        _ => igmp_pkt.set_group_address(Ipv4Addr::new(0, 0, 0, 0)),
+    };
+
+    if !data.is_empty() {
+        igmp_pkt.set_payload(&data);
+    }
+
+    let igmp_aux = IgmpPacket::new(&buf).unwrap();
+    let cksum = igmp_checksum(&igmp_aux);
+
+    let mut icmp_pkt = packet::icmp::MutableIcmpPacket::new(&mut buf).unwrap();
+    icmp_pkt.set_checksum(cksum);
+
+    ip_buf.append(&mut buf);
+    let l = ip_buf.len();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
+    pkt.set_total_length(l as u16);
+    match register.named("update_ip_len") {
+        Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
+            println!("set the ori again");
+            pkt.set_total_length(original_ip_len as u16);
+        }
+        _ => (),
+    };
+    let chksum = checksum(&pkt.to_immutable());
+    pkt.set_checksum(chksum);
+
+    Ok(NaslValue::Data(ip_buf))
 }
 
 /// This function tries to open a TCP connection and sees if anything comes back (SYN/ACK or RST).
@@ -2128,6 +2265,42 @@ mod tests {
             Some(Ok(NaslValue::Data(vec![
                 69, 0, 0, 32, 210, 4, 0, 0, 255, 1, 104, 124, 192, 168, 0, 1, 192, 168, 0, 10, 8,
                 0, 145, 153, 1, 0, 1, 0, 49, 50, 51, 52
+            ])))
+        );
+    }
+
+    #[test]
+    fn forge_igmp() {
+        let code = r###"
+            ip_packet = forge_ip_packet(ip_v : 4,
+                     ip_hl : 5,
+                     ip_tos : 0,
+                     ip_len : 20,
+                     ip_id : 1234,
+                     ip_p : 0x02, #IPPROTO_IGMP
+                     ip_ttl : 255,
+                     ip_off : 0,
+                     ip_src : 192.168.0.1,
+                     ip_dst : 192.168.0.10);
+            igmp = forge_igmp_packet(
+                     ip: ip_packet,
+                     type: 0x11,
+                     code: 10,
+                     group: 224.0.0.1,
+                     );
+        "###;
+        let mut register = Register::default();
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+        parser.next();
+        assert_eq!(
+            parser.next(),
+            Some(Ok(NaslValue::Data(vec![
+                69, 0, 0, 28, 210, 4, 0, 0, 255, 2, 104, 127, 192, 168, 0, 1, 192, 168, 0, 10, 17,
+                10, 14, 244, 224, 0, 0, 1
             ])))
         );
     }
