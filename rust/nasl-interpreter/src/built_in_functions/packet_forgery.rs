@@ -1590,8 +1590,7 @@ fn get_icmp_element<K>(
                     let mut id = [0u8; 8];
                     id[..2].copy_from_slice(&pl[..2]);
                     return Ok(NaslValue::Number(i64::from_le_bytes(id)));
-                }
-                else {
+                } else {
                     return Ok(NaslValue::Number(0));
                 };
             }
@@ -1601,8 +1600,7 @@ fn get_icmp_element<K>(
                     let mut seq = [0u8; 8];
                     seq[0..2].copy_from_slice(&pl[2..4]);
                     return Ok(NaslValue::Number(i64::from_le_bytes(seq)));
-                }
-                else {
+                } else {
                     return Ok(NaslValue::Number(0));
                 };
             }
@@ -1610,8 +1608,7 @@ fn get_icmp_element<K>(
                 if icmp.payload().len() > 4 {
                     let buf = icmp.payload();
                     return Ok(NaslValue::Data(buf[4..].to_vec()));
-                }
-                else {
+                } else {
                     return Ok(NaslValue::Null);
                 }
             }
@@ -1626,9 +1623,56 @@ fn get_icmp_element<K>(
 
 /// Receive a list of IPv4 ICMP packets and print them in a readable format in the screen.
 fn dump_icmp_packet<K>(
-    _register: &Register,
+    register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
+    let positional = register.positional();
+    if positional.is_empty() {
+        return Ok(NaslValue::Null);
+    }
+
+    for icmp_pkt in positional.iter() {
+        let mut buf = match icmp_pkt {
+            NaslValue::Data(d) => d.clone(),
+            _ => {
+                continue;
+            }
+        };
+
+        let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+        let icmp = packet::icmp::IcmpPacket::new(ip.payload()).unwrap();
+
+        let mut icmp_seq = 0;
+        if icmp.payload().len() >= 4 {
+            let pl = icmp.payload();
+            let mut seq = [0u8; 8];
+            seq[0..2].copy_from_slice(&pl[2..4]);
+            icmp_seq = i64::from_le_bytes(seq);
+        }
+
+        let mut icmp_id = 0;
+        if icmp.payload().len() >= 4 {
+            let pl = icmp.payload();
+            let mut id = [0u8; 8];
+            id[..2].copy_from_slice(&pl[..2]);
+            icmp_id = i64::from_le_bytes(id);
+        }
+
+        let mut data = vec![];
+        if icmp.payload().len() > 4 {
+            let buf = icmp.payload();
+            data = buf[4..].to_vec();
+        }
+
+        println!("------");
+        println!("\ticmp_id    : {:?}", icmp_id);
+        println!("\ticmp_code  : {:?}", icmp.get_icmp_code());
+        println!("\ticmp_type  : {:?}", icmp.get_icmp_type());
+        println!("\ticmp_seq   : {:?}", icmp_seq);
+        println!("\ticmp_cksum : {:?}", icmp.get_checksum());
+        println!("\tData       : {:?}", data);
+        println!("\n");
+    }
     Ok(NaslValue::Null)
 }
 
