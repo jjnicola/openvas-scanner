@@ -2123,10 +2123,52 @@ fn nasl_pcap_next<K>(
 /// - pcap_filter: BPF filter, by default it listens to everything
 /// - timeout: timeout in seconds, 5 by default
 fn nasl_send_capture<K>(
-    _register: &Register,
-    _configs: &Context<K>,
+    register: &Register,
+    configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    let interface = match register.named("interface") {
+        Some(ContextType::Value(NaslValue::String(x))) => x.to_string(),
+        None => String::new(),
+        _ => return Err(("String", "Invalid interface value").into()),
+    };
+
+    let filter = match register.named("pcap_filter") {
+        Some(ContextType::Value(NaslValue::String(x))) => x.to_string(),
+        None => String::new(),
+        _ => return Err(("String", "Invalid pcap_filter value").into()),
+    };
+
+    let timeout = match register.named("pcap_timeout") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x as i32 * 1000i32, // to milliseconds
+        None => DEFAULT_TIMEOUT,
+        _ => return Err(("Integer", "Invalid timeout value").into()),
+    };
+
+    // Get the iface name, to set the capture device.
+    let target_ip = get_host_ip(configs)?;
+    let local_ip = get_source_ip(target_ip, 50000u16)?;
+    let mut iface = get_interface_by_local_ip(local_ip)?;
+    if !interface.is_empty() {
+        iface = pcap::Device::from(interface.as_str());
+    }
+
+    let mut capture_dev = match Capture::from_device(iface.clone()) {
+        Ok(c) => match c.promisc(true).timeout(timeout).open() {
+            Ok(capture) => capture,
+            Err(e) => return custom_error!("send_capture: {}", e),
+        },
+        Err(e) => return custom_error!("send_capture: {}", e),
+    };
+
+    let p = match capture_dev.filter(&filter, true) {
+        Ok(_) => capture_dev.next_packet(),
+        Err(e) => Err(pcap::Error::PcapError(e.to_string())),
+    };
+
+    match p {
+        Ok(packet) => return Ok(NaslValue::Data(packet.data.to_vec())),
+        Err(_) => return Ok(NaslValue::Null),
+    };
 }
 
 /// Returns found function for key or None when not found
