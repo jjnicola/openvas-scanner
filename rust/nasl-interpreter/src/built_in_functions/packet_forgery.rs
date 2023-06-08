@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    helper::{get_interface_by_local_ip, get_source_ip},
+    helper::{get_interface_by_local_ip, get_source_ip, islocalhost},
     Context, ContextType, FunctionErrorKind, NaslFunction, NaslValue, Register,
 };
 use pcap::Capture;
@@ -1827,14 +1827,148 @@ fn forge_igmp_packet<K>(
     Ok(NaslValue::Data(ip_buf))
 }
 
+fn new_raw_socket() -> Result<Socket, FunctionErrorKind> {
+    match Socket::new_raw(
+        Domain::IPV4,
+        socket2::Type::RAW,
+        Some(Protocol::from(IPPROTO_RAW)),
+    ) {
+        Ok(s) => Ok(s),
+        Err(e) => Err(FunctionErrorKind::Diagnostic(
+            format!("Not possible to create a raw socket: {}", e),
+            Some(NaslValue::Null),
+        )),
+    }
+}
+
 /// This function tries to open a TCP connection and sees if anything comes back (SYN/ACK or RST).
 ///  
 /// Its argument is:
 /// - port: port for the ping
 fn nasl_tcp_ping<K>(
-    _register: &Register,
-    _configs: &Context<K>,
+    register: &Register,
+    configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
+    let rnd_tcp_port = || -> u16 { (random_impl().unwrap_or(0) % 65535 + 1024) as u16 };
+
+    let sports_ori: Vec<u16> = vec![
+        0, 0, 0, 0, 0, 1023, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 53, 0, 0, 20, 0, 25, 0, 0, 0,
+    ];
+    let mut sports: Vec<u16> = vec![];
+    let ports = [
+        139, 135, 445, 80, 22, 515, 23, 21, 6000, 1025, 25, 111, 1028, 9100, 1029, 79, 497, 548,
+        5000, 1917, 53, 161, 9001, 65535, 443, 113, 993, 8080,
+    ];
+
+    for p in sports_ori.iter() {
+        if *p == 0u16 {
+            sports.push(rnd_tcp_port());
+        } else {
+            sports.push(*p);
+        }
+    }
+
+    let mut soc = new_raw_socket()?;
+    if let Err(e) = soc.set_header_included(true) {
+        return Err(FunctionErrorKind::Diagnostic(
+            format!("Not possible to create a raw socket: {}", e),
+            Some(NaslValue::Null),
+        ));
+    };
+
+    // Get the iface name, to set the capture device.
+    let target_ip = get_host_ip(configs)?;
+    let local_ip = get_source_ip(target_ip, 50000u16)?;
+    let iface = get_interface_by_local_ip(local_ip)?;
+
+    let port = match register.named("port") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x,
+        None => 0, //TODO: implement plug_get_host_open_port()
+        _ => return Err(("Number", "Invalid length value").into()),
+    };
+
+    if islocalhost(target_ip) {
+        return Ok(NaslValue::Number(1));
+    }
+
+    let mut capture_dev = match Capture::from_device(iface.clone()) {
+        Ok(c) => match c.promisc(true).timeout(100).open() {
+            Ok(capture) => capture,
+            Err(e) => return custom_error!("send_packet: {}", e),
+        },
+        Err(e) => return custom_error!("send_packet: {}", e),
+    };
+    let filter = format!("ip and src host {}", target_ip.to_string());
+
+    let mut ip_buf = [0u8; 40];
+    let mut ip = MutableIpv4Packet::new(&mut ip_buf).unwrap();
+    ip.set_header_length(5);
+    ip.set_fragment_offset(0);
+    ip.set_next_level_protocol(IpNextHeaderProtocol(6));
+    ip.set_total_length(40);
+    ip.set_version(4);
+    ip.set_dscp(0);
+    ip.set_identification(random_impl()? as u16);
+    ip.set_ttl(40);
+    let ipv4_src = Ipv4Addr::from_str(&local_ip.to_string()).unwrap();
+    ip.set_source(ipv4_src);
+    let ipv4_dst = Ipv4Addr::from_str(&target_ip.to_string()).unwrap();
+    ip.set_destination(ipv4_dst);
+    let chksum = checksum(&ip.to_immutable());
+    ip.set_checksum(chksum);
+
+    let mut tcp_buf = [0u8; 20];
+    let mut tcp = MutableTcpPacket::new(&mut tcp_buf).unwrap();
+    tcp.set_flags(0x02); //TH_SYN
+    tcp.set_sequence(random_impl()? as u32);
+    tcp.set_acknowledgement(0);
+    tcp.set_data_offset(5);
+    tcp.set_window(2048);
+    tcp.set_urgent_ptr(0);
+
+    for (i, _) in sports.iter().enumerate() {
+        // TODO: the port is fixed since the function to get open ports is not implemented.
+        let mut sport = rnd_tcp_port();
+        let mut dport = port as u16;
+        if port == 0 {
+            sport = sports[i];
+            dport = ports[i] as u16;
+        }
+
+        tcp.set_source(sport);
+        tcp.set_destination(dport);
+        let chksum = pnet::packet::tcp::ipv4_checksum(
+            &tcp.to_immutable(),
+            &ip.get_source(),
+            &ip.get_destination(),
+        );
+        tcp.set_checksum(chksum);
+        ip.set_payload(tcp.packet());
+
+        let sockaddr = socket2::SockAddr::from(SocketAddr::new(target_ip, 0));
+        match soc.send_to(ip.packet(), &sockaddr) {
+            Ok(b) => {
+                println!("Sent {} bytes", b);
+            }
+            Err(e) => {
+                return Err(FunctionErrorKind::Diagnostic(
+                    format!("send_packet: {}", e),
+                    Some(NaslValue::Null),
+                ));
+            }
+        }
+
+        let p = match capture_dev.filter(&filter, true) {
+            Ok(_) => capture_dev.next_packet(),
+            Err(e) => Err(pcap::Error::PcapError(e.to_string())),
+        };
+
+        match p {
+            Ok(_) => return Ok(NaslValue::Number(1)),
+            Err(_) => (),
+        };
+    }
+
     Ok(NaslValue::Null)
 }
 
@@ -1880,19 +2014,7 @@ fn nasl_send_packet<K>(
         return Ok(NaslValue::Null);
     }
 
-    let soc = match Socket::new_raw(
-        Domain::IPV4,
-        socket2::Type::RAW,
-        Some(Protocol::from(IPPROTO_RAW)),
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            return Err(FunctionErrorKind::Diagnostic(
-                format!("Not possible to create a raw socket: {}", e),
-                Some(NaslValue::Null),
-            ));
-        }
-    };
+    let soc = new_raw_socket()?;
 
     if let Err(e) = soc.set_header_included(true) {
         return Err(FunctionErrorKind::Diagnostic(

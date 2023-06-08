@@ -38,6 +38,22 @@ pub fn ipstr2ipaddr(ip_addr: &str) -> Result<IpAddr, FunctionErrorKind> {
     }
 }
 
+/// Tests whether a packet sent to IP is LIKELY to route through the
+/// kernel localhost interface
+pub fn islocalhost(addr: IpAddr) -> bool {
+    // If it is not 0.0.0.0 or doesn't start with 127.0.0.1 then it
+    // probably isn't localhost
+    if !addr.is_loopback() || !addr.is_unspecified() {
+        return false;
+    }
+    // It is not associated to a local interface.
+    if let Err(_e) = get_interface_by_local_ip(addr) {
+        return false;
+    }
+
+    true
+}
+
 /// Get the interface from the local ip
 pub fn get_interface_by_local_ip(local_address: IpAddr) -> Result<Device, FunctionErrorKind> {
     // This fake IP is used for matching (and return false)
