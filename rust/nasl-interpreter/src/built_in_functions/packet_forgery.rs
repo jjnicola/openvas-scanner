@@ -101,7 +101,13 @@ fn forge_ip_packet<K>(
 
     let total_length = 20 + data.len();
     let mut buf = vec![0; total_length];
-    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut buf).unwrap();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
+
     pkt.set_total_length(total_length as u16);
 
     if !data.is_empty() {
@@ -237,7 +243,12 @@ fn set_ip_elements<K>(
         }
     };
 
-    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut buf).unwrap();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     let ip_hl = match register.named("ip_hl") {
         Some(ContextType::Value(NaslValue::Number(x))) => *x as u8,
@@ -334,7 +345,12 @@ fn get_ip_element<K>(
         }
     };
 
-    let pkt = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
+    let pkt = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     match register.named("element") {
         Some(ContextType::Value(NaslValue::String(e))) => match e.as_str() {
@@ -371,7 +387,12 @@ fn dump_ip_packet<K>(
     for ip in positional.iter() {
         match ip {
             NaslValue::Data(data) => {
-                let pkt = packet::ipv4::Ipv4Packet::new(data).unwrap();
+                let pkt = packet::ipv4::Ipv4Packet::new(data).ok_or_else(|| {
+                    FunctionErrorKind::Diagnostic(
+                        "No possible to create a packet from buffer".to_string(),
+                        Some(NaslValue::Null),
+                    )
+                })?;
                 println!("------\n");
                 println!("\tip_hl  : {:?}", pkt.get_header_length());
                 println!("\tip_v   : {:?}", pkt.get_version());
@@ -478,7 +499,12 @@ fn insert_ip_options<K>(
     new_buf[..20].copy_from_slice(&buf[..20]);
     new_buf[20..hl_valid_data].copy_from_slice(&opt_buf[..opt_buf.len()]);
 
-    let mut new_pkt = MutableIpv4Packet::new(&mut new_buf).unwrap();
+    let mut new_pkt = MutableIpv4Packet::new(&mut new_buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     let checksum = checksum(&new_pkt.to_immutable());
     new_pkt.set_checksum(checksum);
     new_pkt.set_header_length((hl / 4) as u8);
@@ -524,10 +550,15 @@ fn forge_tcp_packet<K>(
         _ => Vec::<u8>::new(),
     };
 
-    //tcp lenght + data lenght
+    //tcp length + data length
     let total_length = 20 + data.len();
     let mut buf = vec![0; total_length];
-    let mut tcp_seg = packet::tcp::MutableTcpPacket::new(&mut buf).unwrap();
+    let mut tcp_seg = packet::tcp::MutableTcpPacket::new(&mut buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     if !data.is_empty() {
         tcp_seg.set_payload(&data);
@@ -574,18 +605,38 @@ fn forge_tcp_packet<K>(
     let chksum = match register.named("th_sum") {
         Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
         _ => {
-            let pkt = packet::ipv4::Ipv4Packet::new(&ip_buf).unwrap();
-            let tcp_aux = TcpPacket::new(tcp_seg.packet()).unwrap();
+            let pkt = packet::ipv4::Ipv4Packet::new(&ip_buf).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
+            let tcp_aux = TcpPacket::new(tcp_seg.packet()).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
             pnet::packet::tcp::ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
         }
     };
 
-    let mut tcp_seg = packet::tcp::MutableTcpPacket::new(&mut buf).unwrap();
+    let mut tcp_seg = packet::tcp::MutableTcpPacket::new(&mut buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     tcp_seg.set_checksum(chksum);
 
     ip_buf.append(&mut buf);
     let l = ip_buf.len();
-    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     pkt.set_total_length(l as u16);
     match register.named("update_ip_len") {
         Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
@@ -631,8 +682,18 @@ fn get_tcp_element<K>(
         }
     };
 
-    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
-    let tcp = packet::tcp::TcpPacket::new(ip.payload()).unwrap();
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
+    let tcp = packet::tcp::TcpPacket::new(ip.payload()).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     match register.named("element") {
         Some(ContextType::Value(NaslValue::String(el))) => match el.as_str() {
@@ -681,8 +742,18 @@ fn get_tcp_option<K>(
         }
     };
 
-    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
-    let tcp = packet::tcp::TcpPacket::new(ip.payload()).unwrap();
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
+    let tcp = packet::tcp::TcpPacket::new(ip.payload()).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     let mut max_seg: i64 = 0;
     let mut window: i64 = 0;
@@ -761,8 +832,13 @@ fn set_tcp_elements<K>(
         }
     };
 
-    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
-    let iph_len = ip.get_header_length() as usize * 4; // the header lenght is given in 32-bits words
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
+    let iph_len = ip.get_header_length() as usize * 4; // the header length is given in 32-bits words
 
     let data = match register.named("data") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
@@ -781,14 +857,24 @@ fn set_tcp_elements<K>(
         tcp_total_length = 20 + data.len();
         new_buf = vec![0u8; tcp_total_length];
         new_buf[..20].copy_from_slice(&ori_tcp_buf[..20]);
-        ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).unwrap();
+        ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).ok_or_else(|| {
+            FunctionErrorKind::Diagnostic(
+                "No possible to create a packet from buffer".to_string(),
+                Some(NaslValue::Null),
+            )
+        })?;
         ori_tcp.set_payload(&data);
     } else {
         // Copy the original tcp buffer into the new buffer
         tcp_total_length = ip.payload().len();
         new_buf = vec![0u8; tcp_total_length];
         new_buf[..].copy_from_slice(&ori_tcp_buf);
-        ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).unwrap();
+        ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).ok_or_else(|| {
+            FunctionErrorKind::Diagnostic(
+                "No possible to create a packet from buffer".to_string(),
+                Some(NaslValue::Null),
+            )
+        })?;
     }
 
     if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("th_sport") {
@@ -824,8 +910,18 @@ fn set_tcp_elements<K>(
     let chksum = match register.named("th_sum") {
         Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
         _ => {
-            let pkt = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
-            let tcp_aux = TcpPacket::new(ori_tcp.packet()).unwrap();
+            let pkt = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
+            let tcp_aux = TcpPacket::new(ori_tcp.packet()).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
             pnet::packet::tcp::ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
         }
     };
@@ -842,9 +938,14 @@ fn set_tcp_elements<K>(
     new_ip_buf.append(&mut fin_tcp_buf.to_vec());
 
     let l = new_ip_buf.len();
-    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut new_ip_buf).unwrap();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut new_ip_buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
-    // pnet will panic if the total length set in the ip datagram field does not much with the total lenght.
+    // pnet will panic if the total length set in the ip datagram field does not much with the total length.
     // Therefore, the total length is set to the right one before setting the payload.
     // By default it was always updated, but if desired, the original length is set again after setting the payload.
     let original_ip_len = pkt.get_total_length();
@@ -887,8 +988,13 @@ fn insert_tcp_options<K>(
         }
     };
 
-    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
-    let iph_len = ip.get_header_length() as usize * 4; // the header lenght is given in 32-bits words
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
+    let iph_len = ip.get_header_length() as usize * 4; // the header length is given in 32-bits words
     let ori_tcp_buf = <&[u8]>::clone(&ip.payload()).to_owned();
     let mut ori_tcp: packet::tcp::MutableTcpPacket;
 
@@ -898,7 +1004,12 @@ fn insert_tcp_options<K>(
         Some(ContextType::Value(NaslValue::String(d))) => d.as_bytes().to_vec(),
         Some(ContextType::Value(NaslValue::Number(d))) => d.to_be_bytes().to_vec(),
         _ => {
-            let tcp = TcpPacket::new(&ori_tcp_buf).unwrap();
+            let tcp = TcpPacket::new(&ori_tcp_buf).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
             tcp.payload().to_vec()
         }
     };
@@ -991,7 +1102,12 @@ fn insert_tcp_options<K>(
     let tcp_total_length = 20 + opts_len + data.len();
     new_buf = vec![0u8; tcp_total_length];
     new_buf[..20].copy_from_slice(&ori_tcp_buf[..20]);
-    ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).unwrap();
+    ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     // At this point, opts len is a 4bytes multiple and the ofset is expressed in 32bits words
     ori_tcp.set_data_offset(5 + opts_len as u8 / 4);
@@ -1006,8 +1122,18 @@ fn insert_tcp_options<K>(
     let chksum = match register.named("th_sum") {
         Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
         _ => {
-            let pkt = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
-            let tcp_aux = TcpPacket::new(ori_tcp.packet()).unwrap();
+            let pkt = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
+            let tcp_aux = TcpPacket::new(ori_tcp.packet()).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
             pnet::packet::tcp::ipv4_checksum(&tcp_aux, &pkt.get_source(), &pkt.get_destination())
         }
     };
@@ -1024,9 +1150,14 @@ fn insert_tcp_options<K>(
     new_ip_buf.append(&mut fin_tcp_buf.to_vec());
 
     let l = new_ip_buf.len();
-    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut new_ip_buf).unwrap();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut new_ip_buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
-    // pnet will panic if the total length set in the ip datagram field does not much with the total lenght.
+    // pnet will panic if the total length set in the ip datagram field does not much with the total length.
     // Therefore, the total length is set to the right one before setting the payload.
     // By default it was always updated, but if desired, the original length is set again after setting the payload.
     let original_ip_len = pkt.get_total_length();
@@ -1209,10 +1340,15 @@ fn forge_udp_packet<K>(
         _ => Vec::<u8>::new(),
     };
 
-    //udp lenght + data lenght
+    //udp length + data length
     let total_length = 8 + data.len();
     let mut buf = vec![0; total_length];
-    let mut udp_datagram = packet::udp::MutableUdpPacket::new(&mut buf).unwrap();
+    let mut udp_datagram = packet::udp::MutableUdpPacket::new(&mut buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     if !data.is_empty() {
         udp_datagram.set_payload(&data);
@@ -1235,18 +1371,38 @@ fn forge_udp_packet<K>(
     let chksum = match register.named("th_sum") {
         Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
         _ => {
-            let pkt = packet::ipv4::Ipv4Packet::new(&ip_buf).unwrap();
-            let udp_aux = UdpPacket::new(udp_datagram.packet()).unwrap();
+            let pkt = packet::ipv4::Ipv4Packet::new(&ip_buf).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
+            let udp_aux = UdpPacket::new(udp_datagram.packet()).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
             pnet::packet::udp::ipv4_checksum(&udp_aux, &pkt.get_source(), &pkt.get_destination())
         }
     };
 
-    let mut udp_datagram = packet::udp::MutableUdpPacket::new(&mut buf).unwrap();
+    let mut udp_datagram = packet::udp::MutableUdpPacket::new(&mut buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     udp_datagram.set_checksum(chksum);
 
     ip_buf.append(&mut buf);
     let l = ip_buf.len();
-    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     pkt.set_total_length(l as u16);
     match register.named("update_ip_len") {
         Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
@@ -1283,8 +1439,13 @@ fn set_udp_elements<K>(
         }
     };
 
-    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
-    let iph_len = ip.get_header_length() as usize * 4; // the header lenght is given in 32-bits words
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
+    let iph_len = ip.get_header_length() as usize * 4; // the header length is given in 32-bits words
 
     let data = match register.named("data") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
@@ -1303,14 +1464,24 @@ fn set_udp_elements<K>(
         udp_total_length = 8 + data.len();
         new_buf = vec![0u8; udp_total_length];
         new_buf[..8].copy_from_slice(&ori_udp_buf[..8]);
-        ori_udp = packet::udp::MutableUdpPacket::new(&mut new_buf).unwrap();
+        ori_udp = packet::udp::MutableUdpPacket::new(&mut new_buf).ok_or_else(|| {
+            FunctionErrorKind::Diagnostic(
+                "No possible to create a packet from buffer".to_string(),
+                Some(NaslValue::Null),
+            )
+        })?;
         ori_udp.set_payload(&data);
     } else {
         // Copy the original udp buffer into the new buffer
         udp_total_length = ip.payload().len();
         new_buf = vec![0u8; udp_total_length];
         new_buf[..].copy_from_slice(&ori_udp_buf);
-        ori_udp = packet::udp::MutableUdpPacket::new(&mut new_buf).unwrap();
+        ori_udp = packet::udp::MutableUdpPacket::new(&mut new_buf).ok_or_else(|| {
+            FunctionErrorKind::Diagnostic(
+                "No possible to create a packet from buffer".to_string(),
+                Some(NaslValue::Null),
+            )
+        })?;
     }
 
     if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("uh_sport") {
@@ -1328,8 +1499,18 @@ fn set_udp_elements<K>(
     let chksum = match register.named("uh_sum") {
         Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
         _ => {
-            let pkt = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
-            let udp_aux = UdpPacket::new(ori_udp.packet()).unwrap();
+            let pkt = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
+            let udp_aux = UdpPacket::new(ori_udp.packet()).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
             pnet::packet::udp::ipv4_checksum(&udp_aux, &pkt.get_source(), &pkt.get_destination())
         }
     };
@@ -1346,7 +1527,12 @@ fn set_udp_elements<K>(
     new_ip_buf.append(&mut fin_udp_buf.to_vec());
 
     let l = new_ip_buf.len();
-    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut new_ip_buf).unwrap();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut new_ip_buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     pkt.set_total_length(l as u16);
     pkt.set_payload(&fin_udp_buf);
@@ -1432,8 +1618,18 @@ fn get_udp_element<K>(
         }
     };
 
-    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
-    let udp = packet::udp::UdpPacket::new(ip.payload()).unwrap();
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
+    let udp = packet::udp::UdpPacket::new(ip.payload()).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     match register.named("element") {
         Some(ContextType::Value(NaslValue::String(el))) => match el.as_str() {
@@ -1484,7 +1680,12 @@ fn forge_icmp_packet<K>(
 
     let total_length = 8 + data.len();
     let mut buf = vec![0; total_length];
-    let mut icmp_pkt = packet::icmp::MutableIcmpPacket::new(&mut buf).unwrap();
+    let mut icmp_pkt = packet::icmp::MutableIcmpPacket::new(&mut buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     match register.named("icmp_type") {
         Some(ContextType::Value(NaslValue::Number(x))) => {
@@ -1515,17 +1716,32 @@ fn forge_icmp_packet<K>(
     let chksum = match register.named("icmp_cksum") {
         Some(ContextType::Value(NaslValue::Number(x))) if *x != 0 => (*x as u16).to_be(),
         _ => {
-            let icmp_aux = IcmpPacket::new(&buf).unwrap();
+            let icmp_aux = IcmpPacket::new(&buf).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
             pnet::packet::icmp::checksum(&icmp_aux)
         }
     };
 
-    let mut icmp_pkt = packet::icmp::MutableIcmpPacket::new(&mut buf).unwrap();
+    let mut icmp_pkt = packet::icmp::MutableIcmpPacket::new(&mut buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     icmp_pkt.set_checksum(chksum);
 
     ip_buf.append(&mut buf);
     let l = ip_buf.len();
-    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     pkt.set_total_length(l as u16);
     match register.named("update_ip_len") {
         Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
@@ -1565,8 +1781,18 @@ fn get_icmp_element<K>(
         }
     };
 
-    let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
-    let icmp = packet::icmp::IcmpPacket::new(ip.payload()).unwrap();
+    let ip = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
+    let icmp = packet::icmp::IcmpPacket::new(ip.payload()).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     match register.named("element") {
         Some(ContextType::Value(NaslValue::String(el))) => match el.as_str() {
@@ -1628,8 +1854,18 @@ fn dump_icmp_packet<K>(
             }
         };
 
-        let ip = packet::ipv4::Ipv4Packet::new(&buf).unwrap();
-        let icmp = packet::icmp::IcmpPacket::new(ip.payload()).unwrap();
+        let ip = packet::ipv4::Ipv4Packet::new(&buf).ok_or_else(|| {
+            FunctionErrorKind::Diagnostic(
+                "No possible to create a packet from buffer".to_string(),
+                Some(NaslValue::Null),
+            )
+        })?;
+        let icmp = packet::icmp::IcmpPacket::new(ip.payload()).ok_or_else(|| {
+            FunctionErrorKind::Diagnostic(
+                "No possible to create a packet from buffer".to_string(),
+                Some(NaslValue::Null),
+            )
+        })?;
 
         let mut icmp_seq = 0;
         if icmp.payload().len() >= 4 {
@@ -1761,7 +1997,12 @@ fn forge_igmp_packet<K>(
 
     let total_length = 8 + data.len();
     let mut buf = vec![0; total_length];
-    let mut igmp_pkt = igmp::MutableIgmpPacket::new(&mut buf).unwrap();
+    let mut igmp_pkt = igmp::MutableIgmpPacket::new(&mut buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
 
     match register.named("type") {
         Some(ContextType::Value(NaslValue::Number(x))) => {
@@ -1797,15 +2038,30 @@ fn forge_igmp_packet<K>(
         igmp_pkt.set_payload(&data);
     }
 
-    let igmp_aux = igmp::IgmpPacket::new(&buf).unwrap();
+    let igmp_aux = igmp::IgmpPacket::new(&buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     let cksum = igmp::checksum(&igmp_aux);
 
-    let mut icmp_pkt = packet::icmp::MutableIcmpPacket::new(&mut buf).unwrap();
+    let mut icmp_pkt = packet::icmp::MutableIcmpPacket::new(&mut buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     icmp_pkt.set_checksum(cksum);
 
     ip_buf.append(&mut buf);
     let l = ip_buf.len();
-    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
+    let mut pkt = packet::ipv4::MutableIpv4Packet::new(&mut ip_buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     pkt.set_total_length(l as u16);
     match register.named("update_ip_len") {
         Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
@@ -1894,7 +2150,12 @@ fn nasl_tcp_ping<K>(
     let filter = format!("ip and src host {}", target_ip);
 
     let mut ip_buf = [0u8; 40];
-    let mut ip = MutableIpv4Packet::new(&mut ip_buf).unwrap();
+    let mut ip = MutableIpv4Packet::new(&mut ip_buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     ip.set_header_length(5);
     ip.set_fragment_offset(0);
     ip.set_next_level_protocol(IpNextHeaderProtocol(6));
@@ -1903,15 +2164,25 @@ fn nasl_tcp_ping<K>(
     ip.set_dscp(0);
     ip.set_identification(random_impl()? as u16);
     ip.set_ttl(40);
-    let ipv4_src = Ipv4Addr::from_str(&local_ip.to_string()).unwrap();
+    let ipv4_src = Ipv4Addr::from_str(&local_ip.to_string()).map_err(|_| {
+        FunctionErrorKind::Diagnostic("invalid IP".to_string(), Some(NaslValue::Null))
+    })?;
     ip.set_source(ipv4_src);
-    let ipv4_dst = Ipv4Addr::from_str(&target_ip.to_string()).unwrap();
+    let ipv4_dst = Ipv4Addr::from_str(&target_ip.to_string()).map_err(|_| {
+        FunctionErrorKind::Diagnostic("invalid IP".to_string(), Some(NaslValue::Null))
+    })?;
+
     ip.set_destination(ipv4_dst);
     let chksum = checksum(&ip.to_immutable());
     ip.set_checksum(chksum);
 
     let mut tcp_buf = [0u8; 20];
-    let mut tcp = MutableTcpPacket::new(&mut tcp_buf).unwrap();
+    let mut tcp = MutableTcpPacket::new(&mut tcp_buf).ok_or_else(|| {
+        FunctionErrorKind::Diagnostic(
+            "No possible to create a packet from buffer".to_string(),
+            Some(NaslValue::Null),
+        )
+    })?;
     tcp.set_flags(0x02); //TH_SYN
     tcp.set_sequence(random_impl()? as u32);
     tcp.set_acknowledgement(0);
@@ -2039,7 +2310,12 @@ fn nasl_send_packet<K>(
             NaslValue::Data(data) => data as &[u8],
             _ => return Err(("Data", "Invalid packet").into()),
         };
-        let packet = packet::ipv4::Ipv4Packet::new(packet_raw).unwrap();
+        let packet = packet::ipv4::Ipv4Packet::new(packet_raw).ok_or_else(|| {
+            FunctionErrorKind::Diagnostic(
+                "No possible to create a packet from buffer".to_string(),
+                Some(NaslValue::Null),
+            )
+        })?;
 
         if allow_broadcast {
             if let Err(err) = soc.set_broadcast(true) {
@@ -2160,7 +2436,12 @@ fn nasl_send_capture<K>(
     match p {
         Ok(packet) => {
             // Remove all from lower layer
-            let frame = EthernetPacket::new(packet.data).unwrap();
+            let frame = EthernetPacket::new(packet.data).ok_or_else(|| {
+                FunctionErrorKind::Diagnostic(
+                    "No possible to create a packet from buffer".to_string(),
+                    Some(NaslValue::Null),
+                )
+            })?;
             return Ok(NaslValue::Data(frame.payload().to_vec()));
         }
         Err(_) => Ok(NaslValue::Null),
