@@ -16,6 +16,7 @@ use crate::{
 use pcap::Capture;
 use pnet::packet::{
     self,
+    ethernet::EthernetPacket,
     icmp::*,
     ip::IpNextHeaderProtocol,
     ipv4::{
@@ -2111,10 +2112,10 @@ fn nasl_send_packet<K>(
 /// - pcap_filter: BPF filter, by default it listens to everything
 /// - timeout: timeout in seconds, 5 by default
 fn nasl_pcap_next<K>(
-    _register: &Register,
-    _configs: &Context<K>,
+    register: &Register,
+    configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    Ok(NaslValue::Null)
+    nasl_send_capture(register, configs)
 }
 
 /// Read the next packet.
@@ -2166,7 +2167,11 @@ fn nasl_send_capture<K>(
     };
 
     match p {
-        Ok(packet) => return Ok(NaslValue::Data(packet.data.to_vec())),
+        Ok(packet) => {
+            // Remove all from lower layer
+            let frame = EthernetPacket::new(&packet.data).unwrap();
+            return Ok(NaslValue::Data(frame.payload().to_vec()));
+        }
         Err(_) => return Ok(NaslValue::Null),
     };
 }
