@@ -19,16 +19,10 @@ use pnet::packet::{
     ethernet::EthernetPacket,
     icmp::*,
     ip::IpNextHeaderProtocol,
-    ipv4::{
-        checksum, Ipv4Option, Ipv4OptionIterable, Ipv4OptionNumber, Ipv4OptionNumbers,
-        Ipv4OptionPacket, MutableIpv4OptionPacket, MutableIpv4Packet,
-    },
-    tcp::{
-        MutableTcpOptionPacket, TcpOption, TcpOptionNumber, TcpOptionNumbers, TcpOptionPacket,
-        TcpPacket, *,
-    },
-    udp::{UdpPacket, *},
-    FromPacket, Packet, PrimitiveValues,
+    ipv4::{checksum, MutableIpv4Packet},
+    tcp::{TcpOption, TcpOptionNumbers, TcpPacket, *},
+    udp::UdpPacket,
+    Packet,
 };
 
 use socket2::{Domain, Protocol, Socket};
@@ -413,7 +407,7 @@ fn insert_ip_options<K>(
     register: &Register,
     _configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
-    let mut buf = match register.named("ip") {
+    let buf = match register.named("ip") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
             return Err(FunctionErrorKind::Diagnostic(
@@ -706,7 +700,7 @@ fn get_tcp_option<K>(
             window = val[0] as i64;
         }
         if opt.get_number() == TcpOptionNumbers::SACK_PERMITTED {
-            sack_permitted = 1 as i64;
+            sack_permitted = 1;
         }
         if opt.get_number() == TcpOptionNumbers::TIMESTAMPS {
             let mut t1 = [0u8; 4];
@@ -990,13 +984,11 @@ fn insert_tcp_options<K>(
         }
     }
 
-    println!("{}", opts_len);
     assert_eq!(opts_len % 4, 0);
 
     let mut new_buf: Vec<u8>;
-    let tcp_total_length: usize;
     //Prepare a new buffer with new size, copy the tcp header and set the new data
-    tcp_total_length = 20 + opts_len + data.len();
+    let tcp_total_length = 20 + opts_len + data.len();
     new_buf = vec![0u8; tcp_total_length];
     new_buf[..20].copy_from_slice(&ori_tcp_buf[..20]);
     ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).unwrap();
@@ -1507,18 +1499,14 @@ fn forge_icmp_packet<K>(
         }
         _ => icmp_pkt.set_icmp_code(packet::icmp::IcmpCode::new(0u8)),
     };
-    match register.named("icmp_id") {
-        Some(ContextType::Value(NaslValue::Number(x))) => {
-            buf[4..6].copy_from_slice(&x.to_le_bytes()[0..2]);
-        }
-        _ => (),
-    };
-    match register.named("icmp_seq") {
-        Some(ContextType::Value(NaslValue::Number(x))) => {
-            buf[6..8].copy_from_slice(&x.to_le_bytes()[0..2]);
-        }
-        _ => (),
-    };
+
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("icmp_id") {
+        buf[4..6].copy_from_slice(&x.to_le_bytes()[0..2]);
+    }
+
+    if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("icmp_seq") {
+        buf[6..8].copy_from_slice(&x.to_le_bytes()[0..2]);
+    }
 
     if !data.is_empty() {
         buf[8..].copy_from_slice(&data[0..]);
@@ -1590,27 +1578,27 @@ fn get_icmp_element<K>(
                     let pl = icmp.payload();
                     let mut id = [0u8; 8];
                     id[..2].copy_from_slice(&pl[..2]);
-                    return Ok(NaslValue::Number(i64::from_le_bytes(id)));
+                    Ok(NaslValue::Number(i64::from_le_bytes(id)))
                 } else {
-                    return Ok(NaslValue::Number(0));
-                };
+                    Ok(NaslValue::Number(0))
+                }
             }
             "icmp_seq" => {
                 if icmp.payload().len() >= 4 {
                     let pl = icmp.payload();
                     let mut seq = [0u8; 8];
                     seq[0..2].copy_from_slice(&pl[2..4]);
-                    return Ok(NaslValue::Number(i64::from_le_bytes(seq)));
+                    Ok(NaslValue::Number(i64::from_le_bytes(seq)))
                 } else {
-                    return Ok(NaslValue::Number(0));
-                };
+                    Ok(NaslValue::Number(0))
+                }
             }
             "data" => {
                 if icmp.payload().len() > 4 {
                     let buf = icmp.payload();
-                    return Ok(NaslValue::Data(buf[4..].to_vec()));
+                    Ok(NaslValue::Data(buf[4..].to_vec()))
                 } else {
-                    return Ok(NaslValue::Null);
+                    Ok(NaslValue::Null)
                 }
             }
             _ => Ok(NaslValue::Null),
@@ -1678,64 +1666,68 @@ fn dump_icmp_packet<K>(
 }
 
 // IGMP
+pub mod igmp {
+    use std::net::Ipv4Addr;
 
-use pnet_macros::packet;
-use pnet_macros_support::packet::*;
-use pnet_macros_support::types::*;
+    use pnet::packet::{Packet, PrimitiveValues};
+    use pnet_macros::packet;
+    use pnet_macros_support::types::*;
 
-/// Represents the "IGMP type" header field.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct IgmpType(pub u8);
+    /// Represents the "IGMP type" header field.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct IgmpType(pub u8);
 
-impl IgmpType {
-    /// Create a new `IgmpType` instance.
-    pub fn new(val: u8) -> IgmpType {
-        IgmpType(val)
+    impl IgmpType {
+        /// Create a new `IgmpType` instance.
+        pub fn new(val: u8) -> IgmpType {
+            IgmpType(val)
+        }
     }
-}
 
-impl PrimitiveValues for IgmpType {
-    type T = (u8,);
-    fn to_primitive_values(&self) -> (u8,) {
-        (self.0,)
+    impl PrimitiveValues for IgmpType {
+        type T = (u8,);
+        fn to_primitive_values(&self) -> (u8,) {
+            (self.0,)
+        }
     }
-}
 
-/// Represents a generic IGMP packet.
-#[packet]
-pub struct Igmp {
-    #[construct_with(u8)]
-    pub igmp_type: IgmpType,
-    #[construct_with(u8)]
-    pub igmp_timeout: u8,
-    pub checksum: u16be,
-    #[construct_with(u8, u8, u8, u8)]
-    pub group_address: Ipv4Addr,
-    #[payload]
-    pub payload: Vec<u8>,
-}
+    /// Represents a generic IGMP packet.
+    #[packet]
+    pub struct Igmp {
+        #[construct_with(u8)]
+        pub igmp_type: IgmpType,
+        #[construct_with(u8)]
+        pub igmp_timeout: u8,
+        pub checksum: u16be,
+        #[construct_with(u8, u8, u8, u8)]
+        pub group_address: Ipv4Addr,
+        #[payload]
+        pub payload: Vec<u8>,
+    }
 
-/// The enumeration of the recognized IGMP types.
-#[allow(non_snake_case)]
-#[allow(non_upper_case_globals)]
-pub mod IgmpTypes {
-    use super::IgmpType;
-    /// IGMP type for "Membership Query"
-    pub const MembershipQuery: IgmpType = IgmpType(0x11);
-    /// IGMP type for "IGMPv1 Membership Report"
-    pub const IGMPv1MembershipReport: IgmpType = IgmpType(0x12);
-    /// IGMP type for "IGMPv2 Membership Report"
-    pub const IGMPv2MembershipReport: IgmpType = IgmpType(0x16);
-    /// IGMP type for "IGMPv3 Membership Report"
-    pub const IGMPv3MembershipReport: IgmpType = IgmpType(0x22);
-    /// IGMP type for Leave Group"
-    pub const LeaveGroup: IgmpType = IgmpType(0x17);
-    /// OpenVAS IGMP default type
-    pub const Default: IgmpType = IgmpType(0x00);
-}
-/// Calculates a checksum of an ICMP packet.
-pub fn igmp_checksum(packet: &IgmpPacket) -> u16be {
-    pnet::packet::util::checksum(packet.packet(), 1)
+    /// The enumeration of the recognized IGMP types.
+    #[allow(non_snake_case)]
+    #[allow(non_upper_case_globals)]
+    #[allow(dead_code)]
+    pub mod IgmpTypes {
+        use super::IgmpType;
+        /// IGMP type for "Membership Query"
+        pub const MembershipQuery: IgmpType = IgmpType(0x11);
+        /// IGMP type for "IGMPv1 Membership Report"
+        pub const IGMPv1MembershipReport: IgmpType = IgmpType(0x12);
+        /// IGMP type for "IGMPv2 Membership Report"
+        pub const IGMPv2MembershipReport: IgmpType = IgmpType(0x16);
+        /// IGMP type for "IGMPv3 Membership Report"
+        pub const IGMPv3MembershipReport: IgmpType = IgmpType(0x22);
+        /// IGMP type for Leave Group"
+        pub const LeaveGroup: IgmpType = IgmpType(0x17);
+        /// OpenVAS IGMP default type
+        pub const Default: IgmpType = IgmpType(0x00);
+    }
+    /// Calculates a checksum of an ICMP packet.
+    pub fn checksum(packet: &IgmpPacket) -> u16be {
+        pnet::packet::util::checksum(packet.packet(), 1)
+    }
 }
 
 /// Fills an IP datagram with IGMP data. Note that the ip_p field is not updated. It returns the modified IP datagram. Its arguments are:
@@ -1769,13 +1761,13 @@ fn forge_igmp_packet<K>(
 
     let total_length = 8 + data.len();
     let mut buf = vec![0; total_length];
-    let mut igmp_pkt = MutableIgmpPacket::new(&mut buf).unwrap();
+    let mut igmp_pkt = igmp::MutableIgmpPacket::new(&mut buf).unwrap();
 
     match register.named("type") {
         Some(ContextType::Value(NaslValue::Number(x))) => {
-            igmp_pkt.set_igmp_type(IgmpType::new(*x as u8))
+            igmp_pkt.set_igmp_type(igmp::IgmpType::new(*x as u8))
         }
-        _ => igmp_pkt.set_igmp_type(IgmpTypes::Default),
+        _ => igmp_pkt.set_igmp_type(igmp::IgmpTypes::Default),
     };
 
     match register.named("code") {
@@ -1805,8 +1797,8 @@ fn forge_igmp_packet<K>(
         igmp_pkt.set_payload(&data);
     }
 
-    let igmp_aux = IgmpPacket::new(&buf).unwrap();
-    let cksum = igmp_checksum(&igmp_aux);
+    let igmp_aux = igmp::IgmpPacket::new(&buf).unwrap();
+    let cksum = igmp::checksum(&igmp_aux);
 
     let mut icmp_pkt = packet::icmp::MutableIcmpPacket::new(&mut buf).unwrap();
     icmp_pkt.set_checksum(cksum);
@@ -1869,7 +1861,7 @@ fn nasl_tcp_ping<K>(
         }
     }
 
-    let mut soc = new_raw_socket()?;
+    let soc = new_raw_socket()?;
     if let Err(e) = soc.set_header_included(true) {
         return Err(FunctionErrorKind::Diagnostic(
             format!("Not possible to create a raw socket: {}", e),
@@ -1892,14 +1884,14 @@ fn nasl_tcp_ping<K>(
         return Ok(NaslValue::Number(1));
     }
 
-    let mut capture_dev = match Capture::from_device(iface.clone()) {
+    let mut capture_dev = match Capture::from_device(iface) {
         Ok(c) => match c.promisc(true).timeout(100).open() {
             Ok(capture) => capture,
             Err(e) => return custom_error!("send_packet: {}", e),
         },
         Err(e) => return custom_error!("send_packet: {}", e),
     };
-    let filter = format!("ip and src host {}", target_ip.to_string());
+    let filter = format!("ip and src host {}", target_ip);
 
     let mut ip_buf = [0u8; 40];
     let mut ip = MutableIpv4Packet::new(&mut ip_buf).unwrap();
@@ -1964,10 +1956,9 @@ fn nasl_tcp_ping<K>(
             Err(e) => Err(pcap::Error::PcapError(e.to_string())),
         };
 
-        match p {
-            Ok(_) => return Ok(NaslValue::Number(1)),
-            Err(_) => (),
-        };
+        if p.is_ok() {
+            return Ok(NaslValue::Number(1));
+        }
     }
 
     Ok(NaslValue::Null)
@@ -2035,7 +2026,7 @@ fn nasl_send_packet<K>(
     let local_ip = get_source_ip(target_ip, 50000u16)?;
     let iface = get_interface_by_local_ip(local_ip)?;
 
-    let mut capture_dev = match Capture::from_device(iface.clone()) {
+    let mut capture_dev = match Capture::from_device(iface) {
         Ok(c) => match c.promisc(true).timeout(timeout).open() {
             Ok(capture) => capture,
             Err(e) => return custom_error!("send_packet: {}", e),
@@ -2153,7 +2144,7 @@ fn nasl_send_capture<K>(
         iface = pcap::Device::from(interface.as_str());
     }
 
-    let mut capture_dev = match Capture::from_device(iface.clone()) {
+    let mut capture_dev = match Capture::from_device(iface) {
         Ok(c) => match c.promisc(true).timeout(timeout).open() {
             Ok(capture) => capture,
             Err(e) => return custom_error!("send_capture: {}", e),
@@ -2169,11 +2160,11 @@ fn nasl_send_capture<K>(
     match p {
         Ok(packet) => {
             // Remove all from lower layer
-            let frame = EthernetPacket::new(&packet.data).unwrap();
+            let frame = EthernetPacket::new(packet.data).unwrap();
             return Ok(NaslValue::Data(frame.payload().to_vec()));
         }
-        Err(_) => return Ok(NaslValue::Null),
-    };
+        Err(_) => Ok(NaslValue::Null),
+    }
 }
 
 /// Returns found function for key or None when not found
