@@ -62,6 +62,32 @@ pub fn display_packet(vector: &[u8]) {
     println!("{}", s);
 }
 
+/// Copy from a slice in safe way, performing the necessary test to avoid panicking
+fn safe_copy_from_slice(
+    d_buf: &mut [u8],
+    d_init: usize,
+    d_fin: usize,
+    o_buf: &[u8],
+    o_init: usize,
+    o_fin: usize,
+) -> Result<(), FunctionErrorKind> {
+    let o_range = o_fin - o_init;
+    let d_range = d_fin - d_init;
+    if d_buf.len() < d_range
+        || o_buf.len() < o_range
+        || o_range != d_range
+        || d_buf.len() < d_fin
+        || o_buf.len() < o_fin
+    {
+        return Err(FunctionErrorKind::Diagnostic(
+            "Error copying from slice. Index out of range".to_string(),
+            Some(NaslValue::Null),
+        ));
+    }
+    d_buf[d_init..d_fin].copy_from_slice(&o_buf[o_init..o_fin]);
+    Ok(())
+}
+
 /// Forge an IP datagram inside the block of data. It takes following arguments:
 ///  
 /// - data: is the payload.
@@ -488,16 +514,28 @@ fn insert_ip_options<K>(
     let opt_len = &length.to_le_bytes()[..2];
     let mut opt_buf = vec![0u8; length];
 
-    opt_buf[..1].copy_from_slice(&vec![codebyte][..]);
-    opt_buf[1..3].copy_from_slice(opt_len);
-    opt_buf[3..].copy_from_slice(value);
+    //opt_buf[..1].copy_from_slice(&vec![codebyte][..]);
+    safe_copy_from_slice(&mut opt_buf[..], 0, 1, &[codebyte], 0, 1)?;
+    //opt_buf[1..3].copy_from_slice(opt_len);
+    safe_copy_from_slice(&mut opt_buf[..], 1, 3, opt_len, 0, opt_len.len())?;
+    //opt_buf[3..].copy_from_slice(value);
+    safe_copy_from_slice(&mut opt_buf[..], 3, length, value, 0, value.len())?;
 
     let hl_valid_data = 20 + opt_buf.len();
     let padding = 32 - hl_valid_data % 32;
     let hl = hl_valid_data + padding;
     let mut new_buf = vec![0u8; hl];
-    new_buf[..20].copy_from_slice(&buf[..20]);
-    new_buf[20..hl_valid_data].copy_from_slice(&opt_buf[..opt_buf.len()]);
+    //new_buf[..20].copy_from_slice(&buf[..20]);
+    safe_copy_from_slice(&mut new_buf[..], 0, 20, &buf, 0, 20)?;
+    //new_buf[20..hl_valid_data].copy_from_slice(&opt_buf[..opt_buf.len()]);
+    safe_copy_from_slice(
+        &mut new_buf[..],
+        20,
+        hl_valid_data,
+        &opt_buf,
+        0,
+        opt_buf.len(),
+    )?;
 
     let mut new_pkt = MutableIpv4Packet::new(&mut new_buf).ok_or_else(|| {
         FunctionErrorKind::Diagnostic(
@@ -762,12 +800,14 @@ fn get_tcp_option<K>(
     for opt in tcp.get_options_iter() {
         if opt.get_number() == TcpOptionNumbers::MSS {
             let mut val = [0u8; 2];
-            val[..2].copy_from_slice(&opt.payload()[..2]);
+            //val[..2].copy_from_slice(&opt.payload()[..2]);
+            safe_copy_from_slice(&mut val, 0, 2, opt.payload(), 0, 2)?;
             max_seg = i16::from_be_bytes(val) as i64;
         }
         if opt.get_number() == TcpOptionNumbers::WSCALE {
             let mut val = [0u8; 1];
-            val[..1].copy_from_slice(&opt.payload()[..1]);
+            //val[..1].copy_from_slice(&opt.payload()[..1]);
+            safe_copy_from_slice(&mut val, 0, 1, opt.payload(), 0, 1)?;
             window = val[0] as i64;
         }
         if opt.get_number() == TcpOptionNumbers::SACK_PERMITTED {
@@ -776,8 +816,10 @@ fn get_tcp_option<K>(
         if opt.get_number() == TcpOptionNumbers::TIMESTAMPS {
             let mut t1 = [0u8; 4];
             let mut t2 = [0u8; 4];
-            t1[..4].copy_from_slice(&opt.payload()[..4]);
-            t2[..4].copy_from_slice(&opt.payload()[4..]);
+            //t1[..4].copy_from_slice(&opt.payload()[..4]);
+            safe_copy_from_slice(&mut t1, 0, 4, opt.payload(), 0, 4)?;
+            //t2[..4].copy_from_slice(&opt.payload()[4..]);
+            safe_copy_from_slice(&mut t2, 0, 4, opt.payload(), 4, opt.payload().len())?;
             let t1_val = i32::from_be_bytes(t1) as i64;
             let t2_val = i32::from_be_bytes(t2) as i64;
 
@@ -856,7 +898,8 @@ fn set_tcp_elements<K>(
         //Prepare a new buffer with new size, copy the tcp header and set the new data
         tcp_total_length = 20 + data.len();
         new_buf = vec![0u8; tcp_total_length];
-        new_buf[..20].copy_from_slice(&ori_tcp_buf[..20]);
+        //new_buf[..20].copy_from_slice(&ori_tcp_buf[..20]);
+        safe_copy_from_slice(&mut new_buf[..], 0, 20, &ori_tcp_buf, 0, 20)?;
         ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).ok_or_else(|| {
             FunctionErrorKind::Diagnostic(
                 "No possible to create a packet from buffer".to_string(),
@@ -868,7 +911,15 @@ fn set_tcp_elements<K>(
         // Copy the original tcp buffer into the new buffer
         tcp_total_length = ip.payload().len();
         new_buf = vec![0u8; tcp_total_length];
-        new_buf[..].copy_from_slice(&ori_tcp_buf);
+        //new_buf[..].copy_from_slice(&ori_tcp_buf);
+        safe_copy_from_slice(
+            &mut new_buf[..],
+            0,
+            tcp_total_length,
+            &ori_tcp_buf,
+            0,
+            ori_tcp_buf.len(),
+        )?;
         ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).ok_or_else(|| {
             FunctionErrorKind::Diagnostic(
                 "No possible to create a packet from buffer".to_string(),
@@ -934,7 +985,9 @@ fn set_tcp_elements<K>(
 
     // Create a new IP packet with the original IP header, and the new TCP payload
     let mut new_ip_buf = vec![0u8; iph_len];
-    new_ip_buf[..].copy_from_slice(&buf[..iph_len]);
+    //new_ip_buf[..].copy_from_slice(&buf[..iph_len]);
+    safe_copy_from_slice(&mut new_ip_buf[..], 0, iph_len, &buf, 0, iph_len)?;
+
     new_ip_buf.append(&mut fin_tcp_buf.to_vec());
 
     let l = new_ip_buf.len();
@@ -1101,7 +1154,9 @@ fn insert_tcp_options<K>(
     //Prepare a new buffer with new size, copy the tcp header and set the new data
     let tcp_total_length = 20 + opts_len + data.len();
     new_buf = vec![0u8; tcp_total_length];
-    new_buf[..20].copy_from_slice(&ori_tcp_buf[..20]);
+    //new_buf[..20].copy_from_slice(&ori_tcp_buf[..20]);
+    safe_copy_from_slice(&mut new_buf[..], 0, 20, &ori_tcp_buf, 0, 20)?;
+
     ori_tcp = packet::tcp::MutableTcpPacket::new(&mut new_buf).ok_or_else(|| {
         FunctionErrorKind::Diagnostic(
             "No possible to create a packet from buffer".to_string(),
@@ -1146,7 +1201,8 @@ fn insert_tcp_options<K>(
 
     // Create a new IP packet with the original IP header, and the new TCP payload
     let mut new_ip_buf = vec![0u8; iph_len];
-    new_ip_buf[..].copy_from_slice(&buf[..iph_len]);
+    //new_ip_buf[..].copy_from_slice(&buf[..iph_len]);
+    safe_copy_from_slice(&mut new_ip_buf[..], 0, iph_len, &buf, 0, iph_len)?;
     new_ip_buf.append(&mut fin_tcp_buf.to_vec());
 
     let l = new_ip_buf.len();
@@ -1463,7 +1519,9 @@ fn set_udp_elements<K>(
         //Prepare a new buffer with new size, copy the udp header and set the new data
         udp_total_length = 8 + data.len();
         new_buf = vec![0u8; udp_total_length];
-        new_buf[..8].copy_from_slice(&ori_udp_buf[..8]);
+        //new_buf[..8].copy_from_slice(&ori_udp_buf[..8]);
+        safe_copy_from_slice(&mut new_buf[..], 0, 8, &ori_udp_buf, 0, 8)?;
+
         ori_udp = packet::udp::MutableUdpPacket::new(&mut new_buf).ok_or_else(|| {
             FunctionErrorKind::Diagnostic(
                 "No possible to create a packet from buffer".to_string(),
@@ -1475,7 +1533,15 @@ fn set_udp_elements<K>(
         // Copy the original udp buffer into the new buffer
         udp_total_length = ip.payload().len();
         new_buf = vec![0u8; udp_total_length];
-        new_buf[..].copy_from_slice(&ori_udp_buf);
+        //new_buf[..].copy_from_slice(&ori_udp_buf);
+        safe_copy_from_slice(
+            &mut new_buf[..],
+            0,
+            udp_total_length,
+            &ori_udp_buf,
+            0,
+            ori_udp_buf.len(),
+        )?;
         ori_udp = packet::udp::MutableUdpPacket::new(&mut new_buf).ok_or_else(|| {
             FunctionErrorKind::Diagnostic(
                 "No possible to create a packet from buffer".to_string(),
@@ -1523,7 +1589,8 @@ fn set_udp_elements<K>(
 
     // Create a new IP packet with the original IP header, and the new UDP payload
     let mut new_ip_buf = vec![0u8; iph_len];
-    new_ip_buf[..].copy_from_slice(&buf[..iph_len]);
+    //new_ip_buf[..].copy_from_slice(&buf[..iph_len]);
+    safe_copy_from_slice(&mut new_ip_buf[..], 0, iph_len, &buf, 0, iph_len)?;
     new_ip_buf.append(&mut fin_udp_buf.to_vec());
 
     let l = new_ip_buf.len();
@@ -1702,15 +1769,18 @@ fn forge_icmp_packet<K>(
     };
 
     if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("icmp_id") {
-        buf[4..6].copy_from_slice(&x.to_le_bytes()[0..2]);
+        //buf[4..6].copy_from_slice(&x.to_le_bytes()[0..2]);
+        safe_copy_from_slice(&mut buf, 4, 6, &x.to_le_bytes()[..], 0, 2)?;
     }
 
     if let Some(ContextType::Value(NaslValue::Number(x))) = register.named("icmp_seq") {
-        buf[6..8].copy_from_slice(&x.to_le_bytes()[0..2]);
+        //buf[6..8].copy_from_slice(&x.to_le_bytes()[0..2]);
+        safe_copy_from_slice(&mut buf, 6, 8, &x.to_le_bytes()[..], 0, 2)?;
     }
 
     if !data.is_empty() {
-        buf[8..].copy_from_slice(&data[0..]);
+        //buf[8..].copy_from_slice(&data[0..]);
+        safe_copy_from_slice(&mut buf, 8, total_length, &data[..], 0, data.len())?;
     }
 
     let chksum = match register.named("icmp_cksum") {
@@ -1803,7 +1873,8 @@ fn get_icmp_element<K>(
                 if icmp.payload().len() >= 4 {
                     let pl = icmp.payload();
                     let mut id = [0u8; 8];
-                    id[..2].copy_from_slice(&pl[..2]);
+                    //id[..2].copy_from_slice(&pl[..2]);
+                    safe_copy_from_slice(&mut id, 0, 2, pl, 0, 2)?;
                     Ok(NaslValue::Number(i64::from_le_bytes(id)))
                 } else {
                     Ok(NaslValue::Number(0))
@@ -1813,7 +1884,9 @@ fn get_icmp_element<K>(
                 if icmp.payload().len() >= 4 {
                     let pl = icmp.payload();
                     let mut seq = [0u8; 8];
-                    seq[0..2].copy_from_slice(&pl[2..4]);
+                    //seq[0..2].copy_from_slice(&pl[2..4]);
+                    safe_copy_from_slice(&mut seq, 0, 2, pl, 2, 4)?;
+
                     Ok(NaslValue::Number(i64::from_le_bytes(seq)))
                 } else {
                     Ok(NaslValue::Number(0))
@@ -1871,7 +1944,8 @@ fn dump_icmp_packet<K>(
         if icmp.payload().len() >= 4 {
             let pl = icmp.payload();
             let mut seq = [0u8; 8];
-            seq[0..2].copy_from_slice(&pl[2..4]);
+            //seq[0..2].copy_from_slice(&pl[2..4]);
+            safe_copy_from_slice(&mut seq, 0, 2, pl, 2, 4)?;
             icmp_seq = i64::from_le_bytes(seq);
         }
 
@@ -1879,7 +1953,8 @@ fn dump_icmp_packet<K>(
         if icmp.payload().len() >= 4 {
             let pl = icmp.payload();
             let mut id = [0u8; 8];
-            id[..2].copy_from_slice(&pl[..2]);
+            //id[..2].copy_from_slice(&pl[..2]);
+            safe_copy_from_slice(&mut id, 0, 2, pl, 0, 2)?;
             icmp_id = i64::from_le_bytes(id);
         }
 
@@ -2481,7 +2556,10 @@ pub fn lookup<K>(key: &str) -> Option<NaslFunction<K>> {
 #[cfg(test)]
 mod tests {
 
-    use crate::{DefaultContext, Interpreter, NaslValue, Register};
+    use crate::{
+        built_in_functions::packet_forgery::safe_copy_from_slice, DefaultContext, Interpreter,
+        NaslValue, Register,
+    };
     use nasl_syntax::parse;
 
     #[test]
@@ -2744,5 +2822,51 @@ mod tests {
                 10, 14, 244, 224, 0, 0, 1
             ])))
         );
+    }
+
+    #[test]
+    #[should_panic]
+    fn copy_from_slice_panic() {
+        let mut a = [1u8, 2u8, 3u8, 4u8];
+        let b = ['a' as u8, 'b' as u8, 'c' as u8, 'd' as u8];
+
+        // this should panic
+        a[..2].copy_from_slice(&b[..b.len()]);
+    }
+
+    #[test]
+    fn copy_from_slice_safe() {
+        let mut a = [1u8, 2u8, 3u8, 4u8];
+        let b = ['a' as u8, 'b' as u8, 'c' as u8, 'd' as u8];
+        let alen = a.len();
+        // different range size between origin and destination
+        assert_eq!(
+            safe_copy_from_slice(&mut a, 0, 2, &b, 0, b.len()),
+            Err(crate::FunctionErrorKind::Diagnostic(
+                "Error copying from slice. Index out of range".to_string(),
+                Some(NaslValue::Null)
+            ))
+        );
+
+        // different range size between origin and destination
+        assert_eq!(
+            safe_copy_from_slice(&mut a, 0, alen, &b, 0, 2),
+            Err(crate::FunctionErrorKind::Diagnostic(
+                "Error copying from slice. Index out of range".to_string(),
+                Some(NaslValue::Null)
+            ))
+        );
+
+        // out of index in the destination range
+        assert_eq!(
+            safe_copy_from_slice(&mut a, 1, alen + 1, &b, 0, b.len()),
+            Err(crate::FunctionErrorKind::Diagnostic(
+                "Error copying from slice. Index out of range".to_string(),
+                Some(NaslValue::Null)
+            ))
+        );
+
+        let _r = safe_copy_from_slice(&mut a, 0, 2, &b, 0, 2);
+        assert_eq!(a, ['a' as u8, 'b' as u8, 3u8, 4u8]);
     }
 }
