@@ -11,7 +11,7 @@ use std::{
 
 use crate::{
     helper::{get_interface_by_local_ip, get_source_ip, islocalhost},
-    Context, ContextType, FunctionErrorKind, NaslFunction, NaslValue, Register,
+    Context, ContextType, FunctionErrorKind, NaslFunction, NaslValue, Register, NaslLogger,
 };
 use pcap::Capture;
 use pnet::packet::{
@@ -45,8 +45,8 @@ const IPPROTO_RAW: i32 = 255;
 use super::{hostname::get_host_ip, misc::random_impl};
 
 /// print the raw packet
-pub fn display_packet(vector: &[u8]) {
-    let mut s: String = "".to_string();
+pub fn display_packet(logger: &dyn NaslLogger, vector: &[u8]) {
+    let mut s: String = "\n".to_string();
     let mut count = 0;
 
     for e in vector {
@@ -59,7 +59,7 @@ pub fn display_packet(vector: &[u8]) {
             s.push('\n');
         }
     }
-    println!("{}", s);
+    logger.info(&s);
 }
 
 /// Copy from a slice in safe way, performing the necessary test to avoid panicking
@@ -403,7 +403,7 @@ fn get_ip_element<K>(
 /// Receive a list of IP packets and print them in a readable format in the screen.
 fn dump_ip_packet<K>(
     register: &Register,
-    _configs: &Context<K>,
+    configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     if positional.is_empty() {
@@ -419,19 +419,19 @@ fn dump_ip_packet<K>(
                         Some(NaslValue::Null),
                     )
                 })?;
-                println!("------\n");
-                println!("\tip_hl  : {:?}", pkt.get_header_length());
-                println!("\tip_v   : {:?}", pkt.get_version());
-                println!("\tip_tos : {:?}", pkt.get_dscp());
-                println!("\tip_len : {:?}", pkt.get_total_length());
-                println!("\tip_id  : {:?}", pkt.get_identification());
-                println!("\tip_off : {:?}", pkt.get_fragment_offset());
-                println!("\tip_ttl : {:?}", pkt.get_ttl());
+                configs.logger().info(&"------\n");
+                configs.logger().info(&format!("\tip_hl  : {:?}", pkt.get_header_length()));
+                configs.logger().info(&format!("\tip_v   : {:?}", pkt.get_version()));
+                configs.logger().info(&format!("\tip_tos : {:?}", pkt.get_dscp()));
+                configs.logger().info(&format!("\tip_len : {:?}", pkt.get_total_length()));
+                configs.logger().info(&format!("\tip_id  : {:?}", pkt.get_identification()));
+                configs.logger().info(&format!("\tip_off : {:?}", pkt.get_fragment_offset()));
+                configs.logger().info(&format!("\tip_ttl : {:?}", pkt.get_ttl()));
                 // TODO: match pkt.get_next_level_protocol()
-                println!("\tip_sum  : {:?}", pkt.get_checksum());
-                println!("\tip_src : {:?}", pkt.get_source().to_string());
-                println!("\tip_dst : {:?}", pkt.get_destination().to_string());
-                display_packet(data);
+                configs.logger().info(&format!("\tip_sum  : {:?}", pkt.get_checksum()));
+                configs.logger().info(&format!("\tip_src : {:?}", pkt.get_source().to_string()));
+                configs.logger().info(&format!("\tip_dst : {:?}", pkt.get_destination().to_string()));
+                display_packet(configs.logger(), data);
             }
             _ => {
                 return Err(FunctionErrorKind::WrongArgument(
@@ -1006,7 +1006,6 @@ fn set_tcp_elements<K>(
     pkt.set_payload(&fin_tcp_buf);
     match register.named("update_ip_len") {
         Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
-            println!("set the ori again");
             pkt.set_total_length(original_ip_len);
         }
         _ => (),
@@ -1221,7 +1220,6 @@ fn insert_tcp_options<K>(
     pkt.set_payload(&fin_tcp_buf);
     match register.named("update_ip_len") {
         Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
-            println!("set the ori again");
             pkt.set_total_length(original_ip_len);
         }
         _ => (),
@@ -1237,7 +1235,7 @@ fn insert_tcp_options<K>(
 /// Receive a list of IPv4 datagrams and print their TCP part in a readable format in the screen.
 fn dump_tcp_packet<K>(
     register: &Register,
-    _configs: &Context<K>,
+    configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     if positional.is_empty() {
@@ -1260,13 +1258,13 @@ fn dump_tcp_packet<K>(
 
                 match packet::tcp::TcpPacket::new(ip.payload()) {
                     Some(pkt) => {
-                        println!("------\n");
-                        println!("\tth_sport  : {:?}", pkt.get_source());
-                        println!("\tth_dport   : {:?}", pkt.get_destination());
-                        println!("\tth_seq : {:?}", pkt.get_sequence());
-                        println!("\tth_ack : {:?}", pkt.get_acknowledgement());
-                        println!("\tth_x2  : {:?}", pkt.get_reserved());
-                        println!("\tth_off : {:?}", pkt.get_data_offset());
+                        configs.logger().info(&"------\n");
+                        configs.logger().info(&format!("\tth_sport  : {:?}", pkt.get_source()));
+                        configs.logger().info(&format!("\tth_dport   : {:?}", pkt.get_destination()));
+                        configs.logger().info(&format!("\tth_seq : {:?}", pkt.get_sequence()));
+                        configs.logger().info(&format!("\tth_ack : {:?}", pkt.get_acknowledgement()));
+                        configs.logger().info(&format!("\tth_x2  : {:?}", pkt.get_reserved()));
+                        configs.logger().info(&format!("\tth_off : {:?}", pkt.get_data_offset()));
 
                         let flags = pkt.get_flags();
                         let mut f = String::new();
@@ -1321,29 +1319,29 @@ fn dump_tcp_packet<K>(
                         } else {
                             f.push_str(&format!(" {:?}", flags));
                         };
-                        println!("{}", f);
-                        println!("\tth_win  : {:?}", pkt.get_window());
-                        println!("\tth_sum : {:?}", pkt.get_checksum());
-                        println!("\tth_urp : {:?}", pkt.get_urgent_ptr());
+                        configs.logger().info(&f);
+                        configs.logger().info(&format!("\tth_win  : {:?}", pkt.get_window()));
+                        configs.logger().info(&format!("\tth_sum : {:?}", pkt.get_checksum()));
+                        configs.logger().info(&format!("\tth_urp : {:?}", pkt.get_urgent_ptr()));
                         println!("\tTCP Options:");
                         for o in pkt.get_options_iter() {
                             let n = o.get_number();
                             let p = o.payload();
                             if n == TcpOptionNumbers::MSS {
-                                println!("\t\tTCPOPT_MAXSEG: {:?}", p);
+                                configs.logger().info(&format!("\t\tTCPOPT_MAXSEG: {:?}", p));
                             }
                             if n == TcpOptionNumbers::WSCALE {
-                                println!("\t\tTCPOPT_WINDOW: {:?}", p);
+                                configs.logger().info(&format!("\t\tTCPOPT_WINDOW: {:?}", p));
                             }
 
                             if n == TcpOptionNumbers::SACK_PERMITTED {
-                                println!("\t\tTCPOPT_SACK_PERMITTED: {:?}", p);
+                                configs.logger().info(&format!("\t\tTCPOPT_SACK_PERMITTED: {:?}", p));
                             }
                             if n == TcpOptionNumbers::TIMESTAMPS {
-                                println!("\t\tTCPOPT_TIMESTAMP TSval: {:?}", p);
+                                configs.logger().info(&format!("\t\tTCPOPT_TIMESTAMP TSval: {:?}", p));
                             }
                         }
-                        display_packet(data);
+                        display_packet(configs.logger(), data);
                     }
                     None => {
                         return Err(FunctionErrorKind::WrongArgument(
@@ -1462,7 +1460,6 @@ fn forge_udp_packet<K>(
     pkt.set_total_length(l as u16);
     match register.named("update_ip_len") {
         Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
-            println!("set the ori again");
             pkt.set_total_length(original_ip_len as u16);
         }
         _ => (),
@@ -1614,7 +1611,7 @@ fn set_udp_elements<K>(
 /// Receive a list of IPv4 datagrams and print their UDP part in a readable format in the screen.
 fn dump_udp_packet<K>(
     register: &Register,
-    _configs: &Context<K>,
+    configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     if positional.is_empty() {
@@ -1636,12 +1633,12 @@ fn dump_udp_packet<K>(
 
                 match packet::udp::UdpPacket::new(ip.payload()) {
                     Some(pkt) => {
-                        println!("------\n");
-                        println!("\tuh_sport  : {:?}", pkt.get_source());
-                        println!("\tuh_dport   : {:?}", pkt.get_destination());
-                        println!("\tuh_len : {:?}", pkt.get_length());
-                        println!("\tuh_sum : {:?}", pkt.get_checksum());
-                        display_packet(data);
+                        configs.logger().info(&"------\n");
+                        configs.logger().info(&format!("\tuh_sport  : {:?}", pkt.get_source()));
+                        configs.logger().info(&format!("\tuh_dport   : {:?}", pkt.get_destination()));
+                        configs.logger().info(&format!("\tuh_len : {:?}", pkt.get_length()));
+                        configs.logger().info(&format!("\tuh_sum : {:?}", pkt.get_checksum()));
+                        display_packet(configs.logger(), data);
                     }
                     None => {
                         return Err(FunctionErrorKind::WrongArgument(
@@ -1815,7 +1812,6 @@ fn forge_icmp_packet<K>(
     pkt.set_total_length(l as u16);
     match register.named("update_ip_len") {
         Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
-            println!("set the ori again");
             pkt.set_total_length(original_ip_len as u16);
         }
         _ => (),
@@ -1912,7 +1908,7 @@ fn get_icmp_element<K>(
 /// Receive a list of IPv4 ICMP packets and print them in a readable format in the screen.
 fn dump_icmp_packet<K>(
     register: &Register,
-    _configs: &Context<K>,
+    configs: &Context<K>,
 ) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     if positional.is_empty() {
@@ -1964,14 +1960,14 @@ fn dump_icmp_packet<K>(
             data = buf[4..].to_vec();
         }
 
-        println!("------");
-        println!("\ticmp_id    : {:?}", icmp_id);
-        println!("\ticmp_code  : {:?}", icmp.get_icmp_code());
-        println!("\ticmp_type  : {:?}", icmp.get_icmp_type());
-        println!("\ticmp_seq   : {:?}", icmp_seq);
-        println!("\ticmp_cksum : {:?}", icmp.get_checksum());
-        println!("\tData       : {:?}", data);
-        println!("\n");
+        configs.logger().info(&"------");
+        configs.logger().info(&format!("\ticmp_id    : {:?}", icmp_id));
+        configs.logger().info(&format!("\ticmp_code  : {:?}", icmp.get_icmp_code()));
+        configs.logger().info(&format!("\ticmp_type  : {:?}", icmp.get_icmp_type()));
+        configs.logger().info(&format!("\ticmp_seq   : {:?}", icmp_seq));
+        configs.logger().info(&format!("\ticmp_cksum : {:?}", icmp.get_checksum()));
+        configs.logger().info(&format!("\tData       : {:?}", data));
+        configs.logger().info(&"\n");
     }
     Ok(NaslValue::Null)
 }
@@ -2140,7 +2136,6 @@ fn forge_igmp_packet<K>(
     pkt.set_total_length(l as u16);
     match register.named("update_ip_len") {
         Some(ContextType::Value(NaslValue::Boolean(l))) if !(*l) => {
-            println!("set the ori again");
             pkt.set_total_length(original_ip_len as u16);
         }
         _ => (),
@@ -2287,7 +2282,7 @@ fn nasl_tcp_ping<K>(
         let sockaddr = socket2::SockAddr::from(SocketAddr::new(target_ip, 0));
         match soc.send_to(ip.packet(), &sockaddr) {
             Ok(b) => {
-                println!("Sent {} bytes", b);
+                configs.logger().debug(&format!("Sent {} bytes", b));
             }
             Err(e) => {
                 return Err(FunctionErrorKind::Diagnostic(
@@ -2423,7 +2418,7 @@ fn nasl_send_packet<K>(
 
         match soc.send_to(packet_raw, &sockaddr) {
             Ok(b) => {
-                println!("Sent {} bytes", b);
+                configs.logger().debug(&format!("Sent {} bytes", b));
             }
             Err(e) => {
                 return Err(FunctionErrorKind::Diagnostic(
