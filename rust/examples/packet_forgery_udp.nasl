@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2023 Greenbone AG
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+
 ip_packet = forge_ip_packet(ip_v : 4,
                      ip_hl : 5,
                      ip_tos : 0,
