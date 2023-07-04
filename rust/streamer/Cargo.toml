@@ -1,5 +1,5 @@
 [package]
-name = "openvasd"
+name = "streamer"
 version = "0.1.0"
 edition = "2021"
 
@@ -26,10 +26,7 @@ rustls-pemfile = "1.0.2"
 async-trait = "0.1.68"
 clap = { version = "4.3.0", features = ["derive", "env"] }
 toml = "0.7.4"
-tokio-util = { version = "0.7.8", features = ["full"] }
-tokio-serde = "0.8.0"
-tokio-stream = "0.1.14"
-file-format = "0.17.3"
-futures = "0.3.28"
-
-[dev-dependencies]
+http-body-util = "0.1.0-rc.2" 
+tokio-utils = "0.1.2"
+tokio-util = "0.7.8"
+pretty_env_logger = "0.5.0"
