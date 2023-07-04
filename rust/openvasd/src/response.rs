@@ -2,10 +2,18 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-use std::error::Error;
+use std::{error::Error, pin::Pin, convert::Infallible};
 
+use futures::{stream, Stream};
+use hyper::{body::Bytes, Body};
 use serde::Serialize;
+use futures_util::{StreamExt, Future};
+use tokio::io::AsyncRead;
+use tokio_util::codec::{BytesCodec, FramedRead};
+use tokio_serde;
+use tokio::io::{self, AsyncReadExt};
 
+use tokio_stream;
 type Result = hyper::Response<hyper::Body>;
 
 #[derive(Debug, Default)]
@@ -15,7 +23,40 @@ pub struct Response {
 }
 
 impl Response {
-    #[tracing::instrument]
+    async fn create_stream<S, O, E>(&self, code: hyper::StatusCode, value: S) -> Result
+    where
+        S: Stream<Item = std::result::Result<O, E>> + Send + 'static,
+        O: Into<Bytes> + 'static,
+        E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
+    {
+        match hyper::Response::builder()
+            .status(code)
+            .header("Content-Type", "application/json")
+            .header("authentication", &self.authentication)
+            .header("version", &self.version)
+            .body(hyper::Body::wrap_stream(value))
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::error!("Error creating response: {}", e);
+                hyper::Response::builder()
+                    .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(hyper::Body::empty())
+                    .unwrap()
+            }
+        }
+    }    
+    
+    pub async fn ok_stream<S, O, E>(&self, value: S) -> Result
+    where
+        S: Stream<Item = std::result::Result<O, E>> + Send + 'static,
+        O: Into<Bytes> + 'static,
+        E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
+    {
+        self.create_stream(hyper::StatusCode::OK, value).await
+    }
+
+    
     fn create<T>(&self, code: hyper::StatusCode, value: &T) -> Result
     where
         T: ?Sized + Serialize + std::fmt::Debug,
@@ -49,7 +90,7 @@ impl Response {
             }
         }
     }
-
+    
     pub fn ok<T>(&self, value: &T) -> Result
     where
         T: ?Sized + Serialize + std::fmt::Debug,
