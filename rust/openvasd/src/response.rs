@@ -2,18 +2,14 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-use std::{error::Error, pin::Pin, convert::Infallible};
+use std::{error::Error};
 
-use futures::{stream, Stream};
-use hyper::{body::Bytes, Body};
+use futures::{Stream};
+use hyper::{body::Bytes};
 use serde::Serialize;
-use futures_util::{StreamExt, Future};
-use tokio::io::AsyncRead;
-use tokio_util::codec::{BytesCodec, FramedRead};
-use tokio_serde;
-use tokio::io::{self, AsyncReadExt};
 
-use tokio_stream;
+
+
 type Result = hyper::Response<hyper::Body>;
 
 #[derive(Debug, Default)]
@@ -23,9 +19,9 @@ pub struct Response {
 }
 
 impl Response {
-    async fn create_stream<S, O, E>(&self, code: hyper::StatusCode, value: S) -> Result
+    async fn create_stream<J, O, E>(&self, code: hyper::StatusCode, value: J) -> Result
     where
-        S: Stream<Item = std::result::Result<O, E>> + Send + 'static,
+        J: Stream<Item = std::result::Result<O, E>> + Send + 'static,
         O: Into<Bytes> + 'static,
         E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
     {
@@ -47,9 +43,9 @@ impl Response {
         }
     }    
     
-    pub async fn ok_stream<S, O, E>(&self, value: S) -> Result
+    pub async fn ok_stream<J, O, E>(&self, value: J) -> Result
     where
-        S: Stream<Item = std::result::Result<O, E>> + Send + 'static,
+        J: Stream<Item = std::result::Result<O, E>> + Send + 'static,
         O: Into<Bytes> + 'static,
         E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
     {
