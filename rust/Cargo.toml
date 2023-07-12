@@ -22,4 +22,5 @@ members = [
   "models",
   "osp",
   "openvasd",
+  "streamer",
 ]
