@@ -6,10 +6,15 @@
 //!
 //! All known paths must be handled in the entrypoint function.
 
+use std::convert::Infallible;
+use std::marker::PhantomData;
 use std::{fmt::Display, sync::Arc};
-
+use futures::future::Map;
+use futures::stream::futures_unordered::IntoIter;
+use futures::stream::{self, StreamExt};
 use super::{context::Context, quit_on_poison};
-use hyper::{Body, Method, Request, Response};
+use futures_util::Stream;
+use hyper::{Body, Method, Request, Response, body::Bytes};
 
 use crate::scan::{Error, ScanDeleter, ScanStarter, ScanStopper};
 /// The supported paths of scannerd
@@ -105,11 +110,14 @@ where
 ///
 /// First it will be checked if a known path is requested and if the method is supported.
 /// Than corresponding functions will be called to handle the request.
-pub async fn entrypoint<'a, S>(
+pub async fn entrypoint<'a, S, J, O, E>(
     req: Request<Body>,
     ctx: Arc<Context<S>>,
 ) -> Result<Response<Body>, Error>
 where
+    J: Stream<Item = Result<O, E>> + Send + 'static,
+    O: Into<Bytes> + 'static,
+    E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
     S: ScanStarter
         + ScanStopper
         + ScanDeleter
@@ -294,8 +302,149 @@ where
         }
         (&Method::GET, Vts) => {
             let (_, oids) = ctx.oids.read()?.clone();
-            Ok(ctx.response.ok(&oids))
+
+            let mut v: Vec<Foo<J, O, E>> = Vec::new();
+            let j1 = Foo::new(vec!['['.to_string()], Box::new(|s: String| -> Result<String, Infallible>
+                             {
+                                 Ok(s)
+                             }));
+            v.push(j1);
+
+
+            let j2 = Foo::new(oids, Box::new(|s: String| -> Result<String, Infallible>
+                             {
+                                 Ok(format!("{},",serde_json::to_string(&s).unwrap()).to_string())
+                             }));
+            v.push(j2);
+            
+            
+            let j3 = Foo::new(vec![']'.to_string()], Box::new(|s: String| -> Result<String, Infallible>
+                             {
+                                 Ok(s)
+                             }));
+            v.push(j3);
+            
+            let stream = futures::stream::iter(v.into_iter().map(
+                |v| v.exec() 
+            ));
+            Ok(ctx.response.ok_stream(stream).await)
+                                
         }
         _ => Ok(ctx.response.not_found("path", req.uri().path())),
     }
 }
+
+struct Foo<J, O, E>
+where
+    J: Stream<Item = Result<O, E>> + Send + 'static,
+    O: Into<Bytes> + 'static,
+    E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
+{
+    pub v: Vec<String>,
+    pub c: Box<dyn Fn(String) -> Result<String, Infallible> + 'static>,
+    p: PhantomData<J>
+}
+
+impl<J, O, E> Foo<J, O, E>
+where
+    J: Stream<Item = Result<O, E>> + Send + 'static,
+    O: Into<Bytes> + 'static,
+    E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
+{
+    fn new(v: Vec<String>, c: impl Fn(String) -> Result<String, Infallible> + 'static) -> Self {
+        Self {
+            v,
+            c: Box::new(c),
+            p: PhantomData
+        }
+    }
+
+    pub fn exec(self) ->  Result<String, Infallible> {
+        let e = self.v.iter().map(
+            |s| (self.c)(s.to_string())
+        ).collect();
+        e
+    }
+}
+
+// let stream = futures::stream::iter(
+//                oids
+//                    .into_iter()
+//                    .map(|s: String| -> Result<String, Infallible>
+//                         {
+//                             Ok(format!("{},",serde_json::to_string(&s).unwrap()).to_string())
+//                         }
+//                    )
+//            );
+//fn async_read() -> impl Stream<Item = Result<u8, std::io::Error>> {
+//    let f = File::open("/dev/random").expect("Could not open file");
+//    let reader = BufReader::new(f);
+//    stream::iter(reader.bytes())
+//}
+// 
+//async fn async_main(oids: Vec<String>) {
+//    while let Some(b) = async_read().next().await {
+//        println!("{:?}", b);
+//    }
+//}
+
+
+
+//use futures::stream::futures_unordered::FuturesUnordered;
+//async fn read_oids(oids: Vec<String>) -> Vec<String> {
+//    oids.iter()
+//        .map(|oid| oid)
+//        .collect::<FuturesUnordered<_>>()
+//        .collect::<Vec<_>>()
+//        .await
+//}
+// 
+//async fn read_oid(oid: &String) -> String {
+//    let oidstr = serde_json::to_string(&oid).unwrap();
+//    println!("{:?}", oid);
+//    oidstr
+//}
+
+//struct Oids(Vec<String>);
+// 
+//impl Oids {
+//    fn new(oids: Vec<String>) -> Self {
+//        Self(oids)
+//    }
+//}
+// 
+//impl AsyncRead for Oids {
+//    fn poll_read(
+//        mut self: Pin<&mut Self>,
+//        _cx: &mut Context<'_>,
+//        buf: &mut ReadBuf<'_>,
+//    ) -> Poll<io::Result<()>> {
+//        let amt = std::cmp::min(self.len(), buf.remaining());
+//        let (a, b) = self.split_at(amt);
+//        buf.put_slice(a);
+//        *self = b;
+//        Poll::Ready(Ok(()))
+//    }
+//}
+
+//use futures_util::stream::iter;
+//async fn vec_to_stream<S, O, E, I>(oids: Vec<String>) -> Iter<std::vec::IntoIter<std::string::String>>
+//where
+//    S: Stream<Item = Result<O, E>> + Send + 'static,
+//    O: Into<Bytes> + 'static,
+//    E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
+//    I: IntoIterator,
+//{
+//    //let v: Vec<Result<_, std::io::Error>> = oids.into_iter().map(|x| Ok(x)).collect();
+//    //let v: Vec<Result<_, std::io::Error>> = oids.into_iter().map(|x| Ok(x)).collect();
+// 
+//    
+//    futures_util::stream::iter(oids)
+//    
+// 
+//    //hyper::body::HttpBody::Data(stream)
+//}
+
+//Iter<std::vec::IntoIter<std::result::Result<std::string::String, std::io::Error>>>
+
+
