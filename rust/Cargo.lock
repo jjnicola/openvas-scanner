@@ -2260,6 +2260,7 @@ dependencies = [
 name = "redis-storage"
 version = "0.1.0"
 dependencies = [
+ "models",
  "redis",
  "storage",
 ]

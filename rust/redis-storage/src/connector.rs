@@ -10,6 +10,8 @@ use crate::dberror::DbError;
 use crate::dberror::RedisStorageResult;
 use redis::*;
 
+use storage::Field;
+use storage::item::NVTField;
 use storage::item::Nvt;
 use storage::item::NvtPreference;
 use storage::item::NvtRef;
@@ -17,6 +19,8 @@ use storage::item::PerItemDispatcher;
 use storage::Kb;
 use storage::Notus;
 use storage::StorageError;
+use models::NvtSeverity;
+use models::NVT;
 
 enum KbNvtPos {
     Filename,
@@ -59,6 +63,28 @@ impl TryFrom<storage::item::NVTKey> for KbNvtPos {
 pub struct RedisCtx {
     kb: Connection, //a redis connection
     pub db: u32,    // the name space
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RedisVectorHandler {
+    v: Vec<String>,
+}
+
+impl FromRedisValue for RedisVectorHandler {
+    fn from_redis_value(v: &Value) -> redis::RedisResult<RedisVectorHandler> {
+        match v {
+            Value::Nil => Ok(RedisVectorHandler { v: Vec::new() }),
+            _ => {
+                let new_var: String = from_redis_value(v).unwrap_or_default();
+                let mut nv: Vec<String> = Vec::new();
+                nv.push(new_var);
+                Ok(RedisVectorHandler { v: nv })
+            }
+        }
+    }
+    //fn from_redis_values(v: &[Value]) -> redis::RedisResult<RedisVectorHandler> {
+    //    let new_var: String = Self::from_redis_values(v).unwrap_or_default();
+    //}
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -157,6 +183,9 @@ pub const NOTUSUPDATE_SELECTOR: &[NameSpaceSelector] =
 pub trait RedisWrapper {
     fn rpush<T: ToRedisArgs>(&mut self, key: &str, val: T) -> RedisStorageResult<()>;
     fn lpush<T: ToRedisArgs>(&mut self, key: &str, val: T) -> RedisStorageResult<()>;
+    fn lindex<T: ToRedisArgs>(&mut self, key: &str, index: isize) -> RedisStorageResult<String>;
+    fn lrange<K: AsRef<str> + ToRedisArgs>(&mut self, key: &K, start: isize, end: isize) -> RedisStorageResult<Vec<String>>;
+    fn keys<K: AsRef<str> + ToRedisArgs>(&mut self, pattern: &K) -> RedisStorageResult<Vec<String>>;
 }
 
 impl RedisWrapper for RedisCtx {
@@ -170,6 +199,27 @@ impl RedisWrapper for RedisCtx {
     #[inline(always)]
     fn lpush<T: ToRedisArgs>(&mut self, key: &str, val: T) -> RedisStorageResult<()> {
         self.kb.lpush(key, val).map_err(|e| e.into())
+    }
+
+    ///Wrapper function to avoid accessing kb member directly.
+    #[inline(always)]
+    fn lindex<T: ToRedisArgs>(&mut self, key: &str, index: isize) -> RedisStorageResult<String> {
+        let ret: RedisValueHandler = self.kb.lindex(key, index)?;
+        Ok(ret.v)
+    }
+
+    ///Wrapper function to avoid accessing kb member directly.
+    #[inline(always)]
+    fn lrange<K: AsRef<str> + ToRedisArgs>(&mut self, key: &K, start: isize, end: isize) -> RedisStorageResult<Vec<String>> {
+        let ret = self.kb.lrange(key, start, end)?;
+        Ok(ret)
+    }
+
+    ///Wrapper function to avoid accessing kb member directly.
+    #[inline(always)]
+    fn keys<K: AsRef<str> + ToRedisArgs>(&mut self, pattern: &K) -> RedisStorageResult<Vec<String>> {
+        let ret: Vec<String> = self.kb.keys(pattern)?;
+        Ok(ret)
     }
 }
 
@@ -189,6 +239,45 @@ pub trait RedisAddAdvisory: RedisWrapper {
 }
 
 impl RedisAddAdvisory for RedisCtx {}
+
+
+
+pub trait RedisGetNvt: RedisWrapper {
+    /// Nvt metadata is stored under two different keys
+    /// - 'nvt:<OID>': stores the general metadata ordered following the KbNvtPos indexes
+    /// - 'oid:<OID>:prefs': stores the plugins preferences, including the script_timeout
+    ///   (which is especial and uses preferences id 0)
+    fn redis_get_nvt(&mut self, oid: &str) -> RedisStorageResult<NVT> {
+        let keyname = format!("nvt:{}", oid);
+        let nvt_data = self.lrange(&keyname, 0, -1)?;
+
+        println!("{} {} {:?}", oid, keyname, nvt_data);
+        
+        Ok(NVT::default())
+     //   Ok(NVT {
+     //       name: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       custom:  nvt_data[KbNvtPos::Name as usize].clone(),
+     //       vt_params: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       vt_refs: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       vt_dependencies: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       creation_time: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       modification_time: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       summary: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       impact: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       affected: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       insight: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       solution: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       solution_method: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       detection: nvt_data[KbNvtPos::Name as usize].clone(),
+     //       qod_type: None,
+     //       qod: None,
+     //       severity: models::NvtSeverity::default(),
+       
+       // })
+    }        
+}
+
+impl RedisGetNvt for RedisCtx {}
 
 pub trait RedisAddNvt: RedisWrapper {
     /// Get References. It returns a tuple of three strings
@@ -326,6 +415,8 @@ pub trait RedisAddNvt: RedisWrapper {
 
 impl RedisAddNvt for RedisCtx {}
 
+
+
 impl RedisCtx {
     pub fn open(address: &str, selector: &[NameSpaceSelector]) -> RedisStorageResult<Self> {
         let client = redis::Client::open(address)?;
@@ -376,7 +467,7 @@ impl RedisCtx {
 /// This should be changed when there is new OSP frontend available.
 pub struct CacheDispatcher<R, K>
 where
-    R: RedisWrapper + RedisAddNvt + RedisAddAdvisory,
+    R: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
 {
     cache: Arc<Mutex<R>>,
     kbs: Arc<Mutex<Vec<Kb>>>,
@@ -428,7 +519,7 @@ where
 
 impl<S, K> storage::item::ItemDispatcher<K> for CacheDispatcher<S, K>
 where
-    S: RedisWrapper + RedisAddNvt + RedisAddAdvisory,
+    S: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
     K: AsRef<str>,
 {
     fn dispatch_nvt(&self, nvt: Nvt) -> Result<(), StorageError> {
@@ -454,10 +545,30 @@ where
     }
 }
 
+
+
+impl<S, K> storage::ListRetriever<K> for CacheDispatcher<S, K>
+where
+    S: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
+    K: AsRef<str> + ToRedisArgs,
+    {
+    fn retrieve_keys(&self, pattern: &K) -> Result<Vec<String>, StorageError> {
+        let mut cache = self.cache.lock().map_err(StorageError::from)?;
+        Ok(cache.keys(pattern)?.iter().map(|x| x[4..].to_string()).collect())
+    }
+}
+
 impl<S, K> storage::Retriever<K> for CacheDispatcher<S, K>
 where
-    S: RedisWrapper + RedisAddNvt + RedisAddAdvisory,
+    S: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
+    K: AsRef<str> + ToRedisArgs,
 {
+    fn retrieve_nvt (&self, oid: &K) -> Result<NVT, StorageError>{
+        let mut cache = Arc::as_ref(&self.cache).lock()?;
+        cache.redis_get_nvt(oid.as_ref())
+            .map_err(|e| e.into())    
+    }
+    
     fn retrieve(
         &self,
         _: &K,
@@ -493,11 +604,12 @@ mod tests {
     use std::sync::mpsc::{self, Sender, TryRecvError};
     use std::sync::{Arc, Mutex};
 
+    use redis::ToRedisArgs;
     use storage::item::PerItemDispatcher;
     use storage::item::{NvtPreference, NvtRef, PreferenceType, TagKey, TagValue, ACT};
     use storage::Dispatcher;
 
-    use super::{CacheDispatcher, RedisAddAdvisory, RedisAddNvt, RedisWrapper};
+    use super::{CacheDispatcher, RedisAddAdvisory, RedisAddNvt, RedisWrapper, RedisGetNvt};
 
     #[derive(Clone)]
     struct FakeRedis {
@@ -525,9 +637,22 @@ mod tests {
                 .unwrap();
             Ok(())
         }
+        fn lindex<T: redis::ToRedisArgs>(&mut self, key: &str, index: isize) -> crate::dberror::RedisStorageResult<String> {
+            Ok(String::new())
+        }
+        
+        fn keys<K: AsRef<str> + ToRedisArgs>(&mut self, pattern: &K) -> crate::dberror::RedisStorageResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn lrange<K: AsRef<str> + ToRedisArgs>(&mut self, key: &K, start: isize, end: isize) -> crate::dberror::RedisStorageResult<Vec<String>> {
+            Ok(Vec::new())
+        }
     }
+    
     impl RedisAddNvt for FakeRedis {}
     impl RedisAddAdvisory for FakeRedis {}
+    impl RedisGetNvt for FakeRedis {}
 
     use storage::item::NVTField::*;
     use storage::Field::NVT;

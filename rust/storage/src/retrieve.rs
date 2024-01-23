@@ -4,12 +4,14 @@
 
 use std::marker::PhantomData;
 
+use models::NVT;
+
 use crate::{
     item::{NVTField, NVTKey},
     Field, StorageError,
 };
 
-use models::Vulnerability;
+
 
 /// Retrieve command for a given Field
 ///
@@ -85,8 +87,20 @@ impl Retrieve {
     }
 }
 
+/// Retrieves list of keys based on a key pattern.
+pub trait ListRetriever<K> {
+        /// Gets Fields find by key and scope.
+    fn retrieve_keys(&self, _pattern: &K) -> Result<Vec<String>, StorageError>;
+}    
+
+
 /// Retrieves fields based on a key and scope.
 pub trait Retriever<K> {
+    /// Returns VT's metainformation to be sent to a client.
+    fn retrieve_nvt(&self, _oid: &K) -> Result<NVT, StorageError>{
+        Ok(NVT::default())
+    }
+
     /// Gets Fields find by key and scope.
     fn retrieve(&self, key: &K, scope: &Retrieve) -> Result<Vec<Field>, StorageError>;
 

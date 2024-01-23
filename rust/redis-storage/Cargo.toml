@@ -9,4 +9,4 @@ license = "GPL-2.0-or-later"
 [dependencies]
 redis = "0.22.1"
 storage = { path = "../storage" }
-
+models = { path = "../models" }

@@ -12,7 +12,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{time::AsUnixTimeStamp, types, Dispatcher, Field, Kb, Notus, Retriever, StorageError};
+use models::NVT;
+
+use crate::{time::AsUnixTimeStamp, types, Dispatcher, Field, Kb, Notus, Retriever, StorageError, ListRetriever};
 
 /// Attack Category either set by script_category
 ///
@@ -439,6 +441,12 @@ pub struct Nvt {
     pub category: ACT,
     /// Family
     pub family: String,
+}
+
+/// Is a specialized Retriever for NVT information
+pub trait ItemRetriever {
+    /// Retrieves NVT information stored
+    fn retrieve_single_nvt (&self, oid: &str) -> Result<NVT, StorageError>;        
 }
 
 /// Is a specialized Dispatcher for NVT information within the description block.
