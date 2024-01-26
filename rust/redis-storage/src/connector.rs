@@ -2,16 +2,19 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::usize;
 
 use crate::dberror::DbError;
 use crate::dberror::RedisStorageResult;
+use itertools::Itertools;
 use redis::*;
 
-use storage::Field;
-use storage::item::NVTField;
+use storage::ListRetriever;
 use storage::item::Nvt;
 use storage::item::NvtPreference;
 use storage::item::NvtRef;
@@ -19,8 +22,8 @@ use storage::item::PerItemDispatcher;
 use storage::Kb;
 use storage::Notus;
 use storage::StorageError;
-use models::NvtSeverity;
-use models::NVT;
+use storage::item::TagKey;
+use storage::item::TagValue;
 
 enum KbNvtPos {
     Filename,
@@ -30,6 +33,10 @@ enum KbNvtPos {
     RequiredUDPPorts,
     RequiredPorts,
     Dependencies,
+    Tags,
+    Cves,
+    Bids,
+    Xrefs,
     Category,
     Family,
     Name,
@@ -183,7 +190,7 @@ pub const NOTUSUPDATE_SELECTOR: &[NameSpaceSelector] =
 pub trait RedisWrapper {
     fn rpush<T: ToRedisArgs>(&mut self, key: &str, val: T) -> RedisStorageResult<()>;
     fn lpush<T: ToRedisArgs>(&mut self, key: &str, val: T) -> RedisStorageResult<()>;
-    fn lindex<T: ToRedisArgs>(&mut self, key: &str, index: isize) -> RedisStorageResult<String>;
+    fn lindex<K: AsRef<str> + ToRedisArgs>(&mut self, key: &K, index: isize) -> RedisStorageResult<String>;
     fn lrange<K: AsRef<str> + ToRedisArgs>(&mut self, key: &K, start: isize, end: isize) -> RedisStorageResult<Vec<String>>;
     fn keys<K: AsRef<str> + ToRedisArgs>(&mut self, pattern: &K) -> RedisStorageResult<Vec<String>>;
 }
@@ -203,7 +210,7 @@ impl RedisWrapper for RedisCtx {
 
     ///Wrapper function to avoid accessing kb member directly.
     #[inline(always)]
-    fn lindex<T: ToRedisArgs>(&mut self, key: &str, index: isize) -> RedisStorageResult<String> {
+    fn lindex<K: ToRedisArgs>(&mut self, key: &K, index: isize) -> RedisStorageResult<String> {
         let ret: RedisValueHandler = self.kb.lindex(key, index)?;
         Ok(ret.v)
     }
@@ -241,45 +248,112 @@ pub trait RedisAddAdvisory: RedisWrapper {
 impl RedisAddAdvisory for RedisCtx {}
 
 
-
 pub trait RedisGetNvt: RedisWrapper {
+    #[inline(always)]
+    fn get_refs(bids: &str, cves: &str, xrefs: &str) -> Vec<NvtRef> {
+
+        let f = |x: &str| match x.split_once (":") {
+            Some((a,b)) => NvtRef::from((a,b)),
+            None => NvtRef::from(("","")),
+        };
+        let mut bid_refs: Vec<NvtRef> = bids.split(", ").map(|r| NvtRef::from(("bid", r))).collect();
+        let mut cve_refs: Vec<NvtRef> = cves.split(", ").map(|r| NvtRef::from(("cve", r))).collect();
+        let mut xrefs_refs = xrefs.split(", ").map(|x| f(x)).collect();
+
+        let mut refs: Vec<NvtRef> = Vec::new();
+        refs.append(&mut bid_refs);
+        refs.append(&mut cve_refs);
+        refs.append(&mut xrefs_refs);
+        refs
+    }
+
+    #[inline(always)]
+    fn get_prefs(&mut self, oid: &str) -> RedisStorageResult<Vec<NvtPreference>> {
+        let keyname = format!("oid:{}:prefs", oid);
+        let mut prefs_list = self.lrange(&keyname, 0, -1)?;
+        let mut prefs : Vec<NvtPreference> = Vec::new();
+        for p in prefs_list.iter_mut() {
+            let pref = NvtPreference::from(p.splitn(4, "|||").collect_tuple::<(&str,&str,&str,&str)>().unwrap());
+            prefs.push(pref);
+        }
+        Ok(prefs)
+    }
+
+    #[inline(always)]
+    fn get_tags(tags: &str) -> BTreeMap<TagKey,TagValue> {
+        let mut tag_map = BTreeMap::new();
+
+        let tag_list = tags.split("|")
+            .map(
+                |x| x.splitn(2, "=").collect_tuple::<(&str,&str)>().unwrap());
+
+        for (k,v) in tag_list.into_iter() {
+            tag_map.insert(TagKey::from_str(k).unwrap(), TagValue::from(v));
+        }
+
+        tag_map
+    }
+
+    fn redis_get_advisory (&mut self, oid: &str) -> RedisStorageResult<Option<Nvt>> {
+        let keyname = format!("internal/notus/advisory/{}", oid);
+        let nvt_data = self.lindex(&keyname, 0)?;
+        if nvt_data.is_empty() {
+            return Ok(None);
+        }
+
+        let adv: models::Vulnerability = serde_json::from_str(&nvt_data).unwrap();
+
+        Ok(Some(Nvt::from((oid,adv))))
+        
+    }
     /// Nvt metadata is stored under two different keys
     /// - 'nvt:<OID>': stores the general metadata ordered following the KbNvtPos indexes
     /// - 'oid:<OID>:prefs': stores the plugins preferences, including the script_timeout
     ///   (which is especial and uses preferences id 0)
-    fn redis_get_nvt(&mut self, oid: &str) -> RedisStorageResult<NVT> {
+    fn redis_get_vt(&mut self, oid: &str) -> RedisStorageResult<Option<Nvt>> {
         let keyname = format!("nvt:{}", oid);
         let nvt_data = self.lrange(&keyname, 0, -1)?;
 
-        println!("{} {} {:?}", oid, keyname, nvt_data);
-        
-        Ok(NVT::default())
-     //   Ok(NVT {
-     //       name: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       custom:  nvt_data[KbNvtPos::Name as usize].clone(),
-     //       vt_params: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       vt_refs: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       vt_dependencies: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       creation_time: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       modification_time: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       summary: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       impact: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       affected: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       insight: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       solution: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       solution_method: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       detection: nvt_data[KbNvtPos::Name as usize].clone(),
-     //       qod_type: None,
-     //       qod: None,
-     //       severity: models::NvtSeverity::default(),
-       
-       // })
+        if nvt_data.is_empty() {
+            return Ok(None);
+        }
+
+        let nvt = Nvt {
+            oid: oid.to_string(),
+            name: nvt_data[KbNvtPos::Name as usize].clone(),
+            filename: nvt_data[KbNvtPos::Filename as usize].clone(),
+            tag: Self::get_tags(&nvt_data[KbNvtPos::Tags as usize].clone()),
+            dependencies: nvt_data[KbNvtPos::Dependencies as usize].split(",").map(|x| x.to_string()).collect(),
+            required_keys: nvt_data[KbNvtPos::RequiredKeys as usize].split(",").map(|x| x.to_string()).collect(),
+            mandatory_keys: nvt_data[KbNvtPos::MandatoryKeys as usize].split(",").map(|x| x.to_string()).collect(),
+            excluded_keys:  nvt_data[KbNvtPos::ExcludedKeys as usize].split(",").map(|x| x.to_string()).collect(),
+            required_ports: nvt_data[KbNvtPos::RequiredPorts as usize].split(",").map(|x| x.to_string()).collect(),
+            required_udp_ports:  nvt_data[KbNvtPos::RequiredUDPPorts as usize].split(",").map(|x| x.to_string()).collect(),
+            references:  Self::get_refs(
+                &nvt_data[KbNvtPos::Bids as usize].clone(),
+                &nvt_data[KbNvtPos::Cves as usize].clone(),
+                &nvt_data[KbNvtPos::Xrefs as usize].clone()
+            ),
+            preferences: Self::get_prefs(self, oid)?,
+            category:{
+                match storage::item::ACT::from_str(&nvt_data[KbNvtPos::Category as usize]) {
+                    Ok(c) => c,
+                    Err(_) => {return Err(DbError::Unknown("Invalid nvt category".to_string()))}
+                }
+            },
+            family: nvt_data[KbNvtPos::Family as usize].clone(),
+        };
+
+        Ok(Some(nvt))
     }        
 }
+
 
 impl RedisGetNvt for RedisCtx {}
 
 pub trait RedisAddNvt: RedisWrapper {
+
+        
     /// Get References. It returns a tuple of three strings
     /// Each string is a references type, and each string
     /// can contain a list of references of the same type.
@@ -457,6 +531,45 @@ impl RedisCtx {
     }
 }
 
+pub struct VtHelper<S, K>
+where
+    S: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
+    K: AsRef<str> + ToRedisArgs,
+{
+    pub notus: CacheDispatcher<S,K>,
+    pub vts: CacheDispatcher<S,K>,
+}
+
+impl<S, K> VtHelper<S,K>
+where
+    S: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
+    K: AsRef<str> + ToRedisArgs,
+    str: AsRef<K>
+{
+    pub fn new(notus: CacheDispatcher<S,K>, vts: CacheDispatcher<S,K>) -> Self {
+        Self{notus, vts}
+    }
+
+    pub fn retrieve_vts(&self, vt_selection: Option<Vec<String>>, details: bool) -> Result<Vec<String>, StorageError> {
+
+        let mut oids: Vec<String> = Vec::new();
+        if vt_selection.is_none() || details {
+            if let Ok(vts) = self.vts.retrieve_keys("nvt:*".as_ref()) {
+                oids.append(&mut vts.iter().map(|x| x[4..].to_string()).collect());
+            }
+            if let Ok(notus) = self.notus.retrieve_keys("internal:*".as_ref()) {
+                oids.append(&mut notus.iter().map(|x| x.split("/").last().unwrap().to_string()).collect());
+            }
+            
+        }
+        
+        Ok(oids)
+    }
+
+    
+}
+
+
 /// Cache implementation.
 ///
 /// This implementation is thread-safe as it stored the underlying RedisCtx within a lockable arc reference.
@@ -476,7 +589,6 @@ where
 
 impl<K> CacheDispatcher<RedisCtx, K>
 where
-    K: AsRef<str>,
 {
     /// Initialize and return an NVT Cache Object
     ///
@@ -520,7 +632,8 @@ where
 impl<S, K> storage::item::ItemDispatcher<K> for CacheDispatcher<S, K>
 where
     S: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
-    K: AsRef<str>,
+    K: AsRef<str>
+
 {
     fn dispatch_nvt(&self, nvt: Nvt) -> Result<(), StorageError> {
         let mut cache = Arc::as_ref(&self.cache).lock()?;
@@ -556,6 +669,7 @@ where
         let mut cache = self.cache.lock().map_err(StorageError::from)?;
         Ok(cache.keys(pattern)?.iter().map(|x| x[4..].to_string()).collect())
     }
+
 }
 
 impl<S, K> storage::Retriever<K> for CacheDispatcher<S, K>
@@ -563,9 +677,9 @@ where
     S: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
     K: AsRef<str> + ToRedisArgs,
 {
-    fn retrieve_nvt (&self, oid: &K) -> Result<NVT, StorageError>{
+    fn retrieve_nvt (&self, oid: &K) -> Result<Option<Nvt>, StorageError>{
         let mut cache = Arc::as_ref(&self.cache).lock()?;
-        cache.redis_get_nvt(oid.as_ref())
+        cache.redis_get_vt(oid.as_ref())
             .map_err(|e| e.into())    
     }
     
@@ -637,7 +751,7 @@ mod tests {
                 .unwrap();
             Ok(())
         }
-        fn lindex<T: redis::ToRedisArgs>(&mut self, key: &str, index: isize) -> crate::dberror::RedisStorageResult<String> {
+        fn lindex<K: AsRef<str> + ToRedisArgs>(&mut self, key: &K, index: isize) -> crate::dberror::RedisStorageResult<String> {
             Ok(String::new())
         }
         

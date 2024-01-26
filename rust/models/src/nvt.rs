@@ -11,7 +11,7 @@ use core::fmt;
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(feature = "bincode_support", derive(bincode::Encode, bincode::Decode))]
-pub struct NVT {
+pub struct NVTI {
     pub name: String,
     pub custom: String,
     pub vt_params: String,
@@ -116,4 +116,22 @@ impl fmt::Display for QodType {
             QodType::PackageUnreliable => write!(f, "PackageUnreliable"),
         }
     }
+}
+
+
+pub enum NvtiPos {
+    Filename,
+    RequiredKeys,
+    MandatoryKeys,
+    ExcludedKeys,
+    RequiredUDPPorts,
+    RequiredPorts,
+    Dependencies,
+    Tags,
+    Cves,
+    Bids,
+    Xrefs,
+    Category,
+    Family,
+    Name,
 }

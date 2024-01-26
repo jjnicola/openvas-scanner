@@ -4,10 +4,8 @@
 
 use std::marker::PhantomData;
 
-use models::NVT;
-
 use crate::{
-    item::{NVTField, NVTKey},
+    item::{NVTField, NVTKey, Nvt},
     Field, StorageError,
 };
 
@@ -97,8 +95,8 @@ pub trait ListRetriever<K> {
 /// Retrieves fields based on a key and scope.
 pub trait Retriever<K> {
     /// Returns VT's metainformation to be sent to a client.
-    fn retrieve_nvt(&self, _oid: &K) -> Result<NVT, StorageError>{
-        Ok(NVT::default())
+    fn retrieve_nvt(&self, _oid: &K) -> Result<Option<Nvt>, StorageError>{
+        Ok(Some(Nvt::default()))
     }
 
     /// Gets Fields find by key and scope.

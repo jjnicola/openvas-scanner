@@ -1,4 +1,5 @@
-use redis_storage::{CacheDispatcher, FEEDUPDATE_SELECTOR};
+
+use redis_storage::{CacheDispatcher, VtHelper, FEEDUPDATE_SELECTOR, NOTUSUPDATE_SELECTOR};
 use storage::Storage;
 
 use storage::item::ItemDispatcher;
@@ -8,16 +9,20 @@ fn main() {
 
     let redis= "unix:///run/redis-openvas/redis.sock";
 
-    let cache = CacheDispatcher::init(redis, FEEDUPDATE_SELECTOR).unwrap();
+    let notus_cache = CacheDispatcher::init(redis, NOTUSUPDATE_SELECTOR).unwrap();
+    let vts_cache = CacheDispatcher::init(redis, FEEDUPDATE_SELECTOR).unwrap();
+
+    let cache = VtHelper::new(notus_cache, vts_cache);
     
-    let oids = cache.retrieve_keys(&"nvt:*".to_string()).unwrap();
+    let oids = cache.retrieve_vts(None, false).unwrap();
 
-    for oid in oids.iter() {
-        let metadata = cache.retrieve_nvt(oid).unwrap();
 
-        println!("{:?}", metadata);
-    }
-    
-
+    //for oid in oids.iter() {
+    //    let metadata = cache.retrieve_vt(oid).unwrap();
+    //    let json_str = serde_json::to_string(&metadata).unwrap();
+    //    println!("{json_str}");
+    //    
+    //}
 
 }
+
