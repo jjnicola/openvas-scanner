@@ -86,16 +86,20 @@ impl Retrieve {
 }
 
 /// Retrieves list of keys based on a key pattern.
-pub trait ListRetriever<K> {
+pub trait ListRetriever {
         /// Gets Fields find by key and scope.
-    fn retrieve_keys(&self, _pattern: &K) -> Result<Vec<String>, StorageError>;
+    fn retrieve_keys(&self, _pattern: &str) -> Result<Vec<String>, StorageError>;
 }    
 
 
 /// Retrieves fields based on a key and scope.
 pub trait Retriever<K> {
     /// Returns VT's metainformation to be sent to a client.
-    fn retrieve_nvt(&self, _oid: &K) -> Result<Option<Nvt>, StorageError>{
+    fn retrieve_nvt(&self, _oid: &str) -> Result<Option<Nvt>, StorageError>{
+        Ok(Some(Nvt::default()))
+    }
+    /// Returns Advisories metainformation to be sent to a client.
+    fn retrieve_advisory(&self, _oid: &str) -> Result<Option<Nvt>, StorageError>{
         Ok(Some(Nvt::default()))
     }
 
