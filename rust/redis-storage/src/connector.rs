@@ -190,9 +190,9 @@ pub const NOTUSUPDATE_SELECTOR: &[NameSpaceSelector] =
 pub trait RedisWrapper {
     fn rpush<T: ToRedisArgs>(&mut self, key: &str, val: T) -> RedisStorageResult<()>;
     fn lpush<T: ToRedisArgs>(&mut self, key: &str, val: T) -> RedisStorageResult<()>;
-    fn lindex<K: AsRef<str> + ToRedisArgs>(&mut self, key: &K, index: isize) -> RedisStorageResult<String>;
-    fn lrange<K: AsRef<str> + ToRedisArgs>(&mut self, key: &K, start: isize, end: isize) -> RedisStorageResult<Vec<String>>;
-    fn keys<K: AsRef<str> + ToRedisArgs>(&mut self, pattern: &K) -> RedisStorageResult<Vec<String>>;
+    fn lindex(&mut self, key: &str, index: isize) -> RedisStorageResult<String>;
+    fn lrange(&mut self, key: &str, start: isize, end: isize) -> RedisStorageResult<Vec<String>>;
+    fn keys(&mut self, pattern: &str) -> RedisStorageResult<Vec<String>>;
 }
 
 impl RedisWrapper for RedisCtx {
@@ -210,21 +210,21 @@ impl RedisWrapper for RedisCtx {
 
     ///Wrapper function to avoid accessing kb member directly.
     #[inline(always)]
-    fn lindex<K: ToRedisArgs>(&mut self, key: &K, index: isize) -> RedisStorageResult<String> {
+    fn lindex(&mut self, key: &str, index: isize) -> RedisStorageResult<String> {
         let ret: RedisValueHandler = self.kb.lindex(key, index)?;
         Ok(ret.v)
     }
 
     ///Wrapper function to avoid accessing kb member directly.
     #[inline(always)]
-    fn lrange<K: AsRef<str> + ToRedisArgs>(&mut self, key: &K, start: isize, end: isize) -> RedisStorageResult<Vec<String>> {
+    fn lrange(&mut self, key: &str, start: isize, end: isize) -> RedisStorageResult<Vec<String>> {
         let ret = self.kb.lrange(key, start, end)?;
         Ok(ret)
     }
 
     ///Wrapper function to avoid accessing kb member directly.
     #[inline(always)]
-    fn keys<K: AsRef<str> + ToRedisArgs>(&mut self, pattern: &K) -> RedisStorageResult<Vec<String>> {
+    fn keys(&mut self, pattern: &str) -> RedisStorageResult<Vec<String>> {
         let ret: Vec<String> = self.kb.keys(pattern)?;
         Ok(ret)
     }
@@ -531,22 +531,23 @@ impl RedisCtx {
     }
 }
 
-pub struct VtHelper<S, K>
+pub struct VtHelper<R, K>
 where
-    S: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
+    R: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
     K: AsRef<str> + ToRedisArgs,
 {
-    pub notus: CacheDispatcher<S,K>,
-    pub vts: CacheDispatcher<S,K>,
+    pub notus: CacheDispatcher<R,K>,
+    pub vts: CacheDispatcher<R,K>,
 }
 
-impl<S, K> VtHelper<S,K>
+impl<R, K> VtHelper<R,K>
 where
-    S: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
+    R: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
     K: AsRef<str> + ToRedisArgs,
     str: AsRef<K>
+
 {
-    pub fn new(notus: CacheDispatcher<S,K>, vts: CacheDispatcher<S,K>) -> Self {
+    pub fn new(notus: CacheDispatcher<R,K>, vts: CacheDispatcher<R,K>) -> Self {
         Self{notus, vts}
     }
 
@@ -564,9 +565,7 @@ where
         }
         
         Ok(oids)
-    }
-
-    
+    }   
 }
 
 
@@ -581,6 +580,7 @@ where
 pub struct CacheDispatcher<R, K>
 where
     R: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
+    K: AsRef<str> + ToRedisArgs,
 {
     cache: Arc<Mutex<R>>,
     kbs: Arc<Mutex<Vec<Kb>>>,
@@ -589,6 +589,7 @@ where
 
 impl<K> CacheDispatcher<RedisCtx, K>
 where
+    K: AsRef<str> + ToRedisArgs,
 {
     /// Initialize and return an NVT Cache Object
     ///
@@ -632,7 +633,7 @@ where
 impl<S, K> storage::item::ItemDispatcher<K> for CacheDispatcher<S, K>
 where
     S: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
-    K: AsRef<str>
+    K: AsRef<str> + ToRedisArgs,
 
 {
     fn dispatch_nvt(&self, nvt: Nvt) -> Result<(), StorageError> {
@@ -650,10 +651,10 @@ where
         kbs.push(kb);
         Ok(())
     }
-    fn dispatch_advisory(&self, key: &K, adv: storage::Notus) -> Result<(), StorageError> {
+    fn dispatch_advisory(&self, key: &str, adv: storage::Notus) -> Result<(), StorageError> {
         let mut cache = Arc::as_ref(&self.cache).lock()?;
         cache
-            .redis_add_advisory(key.as_ref(), adv)
+            .redis_add_advisory(key, adv)
             .map_err(|e| e.into())
     }
 }
@@ -667,7 +668,7 @@ where
     {
     fn retrieve_keys(&self, pattern: &K) -> Result<Vec<String>, StorageError> {
         let mut cache = self.cache.lock().map_err(StorageError::from)?;
-        Ok(cache.keys(pattern)?.iter().map(|x| x[4..].to_string()).collect())
+        Ok(cache.keys(pattern.as_ref())?.iter().map(|x| x[4..].to_string()).collect())
     }
 
 }
@@ -676,6 +677,7 @@ impl<S, K> storage::Retriever<K> for CacheDispatcher<S, K>
 where
     S: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt,
     K: AsRef<str> + ToRedisArgs,
+
 {
     fn retrieve_nvt (&self, oid: &K) -> Result<Option<Nvt>, StorageError>{
         let mut cache = Arc::as_ref(&self.cache).lock()?;
@@ -751,15 +753,15 @@ mod tests {
                 .unwrap();
             Ok(())
         }
-        fn lindex<K: AsRef<str> + ToRedisArgs>(&mut self, key: &K, index: isize) -> crate::dberror::RedisStorageResult<String> {
+        fn lindex(&mut self, key: &str, index: isize) -> crate::dberror::RedisStorageResult<String> {
             Ok(String::new())
         }
         
-        fn keys<K: AsRef<str> + ToRedisArgs>(&mut self, pattern: &K) -> crate::dberror::RedisStorageResult<Vec<String>> {
+        fn keys(&mut self, pattern: &str) -> crate::dberror::RedisStorageResult<Vec<String>> {
             Ok(Vec::new())
         }
 
-        fn lrange<K: AsRef<str> + ToRedisArgs>(&mut self, key: &K, start: isize, end: isize) -> crate::dberror::RedisStorageResult<Vec<String>> {
+        fn lrange(&mut self, key: &str, start: isize, end: isize) -> crate::dberror::RedisStorageResult<Vec<String>> {
             Ok(Vec::new())
         }
     }

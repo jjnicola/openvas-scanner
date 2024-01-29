@@ -551,7 +551,7 @@ pub trait ItemDispatcher<K> {
         Ok(())
     }
     /// Stores an advisory
-    fn dispatch_advisory(&self, _: &K, _: Notus) -> Result<(), StorageError> {
+    fn dispatch_advisory(&self, _: &str, _: Notus) -> Result<(), StorageError> {
         Ok(())
     }
 }
@@ -569,8 +569,8 @@ where
 
 impl<S, K> PerItemDispatcher<S, K>
 where
-    K: AsRef<str>,
     S: ItemDispatcher<K>,
+    K: AsRef<str>
 {
     /// Creates a new NvtDispatcher without a feed_version and nvt.
     pub fn new(dispatcher: S) -> Self {
@@ -624,7 +624,7 @@ where
         match scope {
             Field::NVT(nvt) => self.store_nvt_field(nvt),
             Field::KB(kb) => self.dispatcher.dispatch_kb(key, kb),
-            Field::NOTUS(adv) => self.dispatcher.dispatch_advisory(key, adv),
+            Field::NOTUS(adv) => self.dispatcher.dispatch_advisory(key.as_ref(), adv),
         }
     }
 

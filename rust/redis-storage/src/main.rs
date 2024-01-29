@@ -9,12 +9,18 @@ fn main() {
 
     let redis= "unix:///run/redis-openvas/redis.sock";
 
-    let notus_cache = CacheDispatcher::init(redis, NOTUSUPDATE_SELECTOR).unwrap();
-    let vts_cache = CacheDispatcher::init(redis, FEEDUPDATE_SELECTOR).unwrap();
 
-    let cache = VtHelper::new(notus_cache, vts_cache);
+    let c = redis_storage::CacheDispatcher::as_dispatcher(redis, FEEDUPDATE_SELECTOR);
+
     
-    let oids = cache.retrieve_vts(None, false).unwrap();
+    //let notus_cache = CacheDispatcher::init(redis, NOTUSUPDATE_SELECTOR).unwrap();
+
+    
+    //let vts_cache = CacheDispatcher::init(redis, FEEDUPDATE_SELECTOR).unwrap();
+
+  //  let cache = VtHelper::new(notus_cache, vts_cache);
+    
+    //let oids = cache.retrieve_vts(None, false).unwrap();
 
 
     //for oid in oids.iter() {
