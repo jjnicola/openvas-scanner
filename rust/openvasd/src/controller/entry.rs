@@ -11,7 +11,10 @@ use std::{fmt::Display, sync::Arc};
 
 use super::{context::Context, ClientIdentifier};
 use hyper::{Body, Method, Request, Response};
+use redis_storage::{CacheDispatcher, RedisCtx, NOTUSUPDATE_SELECTOR, FEEDUPDATE_SELECTOR, VtHelper};
 
+use crate::ospcmd::getvts::GetVts;
+use crate::ospcmd::{GetVtsWrapper, self};
 use crate::{
     controller::ClientHash,
     notus::NotusScanner,
@@ -40,6 +43,8 @@ enum KnownPaths {
     Health(HealthOpts),
     /// /notus/{os}
     Notus(Option<String>),
+    /// /get_vts/
+    GetVts(Option<String>),
     /// Not supported
     Unknown,
 }
@@ -76,6 +81,10 @@ impl KnownPaths {
                 Some("started") => KnownPaths::Health(HealthOpts::Started),
                 _ => KnownPaths::Unknown,
             },
+            Some("get_vts") => match parts.next() {
+                Some(vt_selection) => KnownPaths::GetVts(Some(vt_selection.to_string())),
+                _ => KnownPaths::GetVts(None)
+            }
             _ => {
                 tracing::trace!("Unknown path: {path}");
                 KnownPaths::Unknown
@@ -108,6 +117,8 @@ impl Display for KnownPaths {
             KnownPaths::Health(HealthOpts::Alive) => write!(f, "/health/alive"),
             KnownPaths::Health(HealthOpts::Ready) => write!(f, "/health/ready"),
             KnownPaths::Health(HealthOpts::Started) => write!(f, "/health/started"),
+            KnownPaths::GetVts(None) => write!(f, "/get_vts"),
+            KnownPaths::GetVts(Some(vt_selection)) => write!(f, "/get_vts/{}", vt_selection),
         }
     }
 }
@@ -351,6 +362,24 @@ where
 
             Ok(ctx.response.ok_json_stream(oids).await)
         }
+
+        (&Method::GET, GetVts(None)) => {
+
+
+
+            let redis= "unix:///run/redis-openvas/redis.sock";
+            let notus_cache: CacheDispatcher<RedisCtx, String> =
+                CacheDispatcher::init(redis, NOTUSUPDATE_SELECTOR).unwrap();
+            let vts_cache =
+                CacheDispatcher::init(redis, FEEDUPDATE_SELECTOR).unwrap();
+            let cache = VtHelper::new(notus_cache, vts_cache);
+            let gvw = ospcmd::GetVtsWrapper::new(cache);
+            
+            let vts = gvw.get_vts(None).await;
+            Ok(ctx.response.ok_json_stream(vts).await)
+        }
+
+        
         _ => Ok(ctx.response.not_found("path", req.uri().path())),
     }
 }
