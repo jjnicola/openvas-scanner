@@ -12,7 +12,7 @@ use crate::nasl::utils::Context;
 use nasl_function_proc_macro::nasl_function;
 
 #[nasl_function]
-fn start_denial(context: &Context, register: &mut Register) -> Result<NaslValue, FnError> {
+fn start_denial(context: &Context, script_info: &mut ScriptInfo) -> Result<NaslValue, FnError> {
     let retry = if let Some(p) = context
         .scan_params()
         .find(|p| p.id == "checks_read_timeout")
@@ -25,22 +25,19 @@ fn start_denial(context: &Context, register: &mut Register) -> Result<NaslValue,
     let port = context.get_host_open_port().unwrap_or_default();
     if port > 0 {
         if let Ok(_soc) = make_tcp_socket(context.target().ip_addr(), port, retry) {
-            register.add_global("denial_port", NaslValue::Number(port.into()).into());
+            script_info.denial_port =  Some(port);
 
             return Ok(NaslValue::Null);
         }
     };
 
-    let p = ContextType::Value(NaslValue::Boolean(
-        nasl_tcp_ping_shared(context, None)? > NaslValue::Number(0),
-    ));
-    register.add_global("alive", p);
+    script_info.alive = nasl_tcp_ping_shared(context, None)? > NaslValue::Number(0);
 
     return Ok(NaslValue::Null);
 }
 
 #[nasl_function]
-async fn end_denial(context: &Context<'_>, register: &Register) -> Result<NaslValue, FnError> {
+async fn end_denial(context: &Context<'_>, register: &Register, script_info: &ScriptInfo) -> Result<NaslValue, FnError> {
     let retry = if let Some(p) = context
         .scan_params()
         .find(|p| p.id == "checks_read_timeout")
@@ -50,14 +47,14 @@ async fn end_denial(context: &Context<'_>, register: &Register) -> Result<NaslVa
         5
     };
 
-    match register.named("denial_port") {
-        Some(ContextType::Value(NaslValue::Number(port))) => {
+    match script_info.denial_port {
+        Some(port) => {
             let vendor_version = match register.named("vendor_version") {
                 Some(ContextType::Value(NaslValue::String(v))) => v.clone(),
                 _ => "".to_string(),
             };
 
-            if let Ok(mut soc) = make_tcp_socket(context.target().ip_addr(), *port as u16, retry) {
+            if let Ok(mut soc) = make_tcp_socket(context.target().ip_addr(), port as u16, retry) {
                 let bogus_data = format!("Network Security Scan by {} in progress", vendor_version);
                 if soc.write(bogus_data.as_bytes()).is_ok() {
                     return Ok(NaslValue::Number(1));
@@ -65,11 +62,11 @@ async fn end_denial(context: &Context<'_>, register: &Register) -> Result<NaslVa
             }
         }
         _ => {
-            match register.named("alive") {
-                Some(ContextType::Value(NaslValue::Number(0))) => {
+            match script_info.alive {
+                false => {
                     return Ok(NaslValue::Number(1));
                 }
-                _ => {
+                true => {
                     return nasl_tcp_ping_shared(context, None);
                 }
             };
