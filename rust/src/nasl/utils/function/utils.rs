@@ -140,6 +140,7 @@ fn check_named_args(
 /// named arguments exist.
 pub fn check_args(
     register: &Register,
+    script_info: &ScriptInfo,
     _nasl_fn_name: &str,
     named: &[&str],
     maybe_named: &[&str],

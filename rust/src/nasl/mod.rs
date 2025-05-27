@@ -23,6 +23,7 @@ pub mod prelude {
     pub use super::syntax::NaslValue;
     pub use super::utils::ArgumentError;
     pub use super::utils::Context;
+    pub use super::utils::ScriptInfo;
     pub use super::utils::ContextType;
     pub use super::utils::FnError;
     pub use super::utils::InternalError;

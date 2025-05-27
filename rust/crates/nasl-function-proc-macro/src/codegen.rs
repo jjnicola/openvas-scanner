@@ -39,6 +39,12 @@ impl<'a> ArgsStruct<'a> {
             .any(|arg| matches!(arg.kind, ArgKind::Register))
     }
 
+    fn has_script_info_arg(&self) -> bool {
+        self.args
+            .iter()
+            .any(|arg| matches!(arg.kind, ArgKind::ScriptInfo))
+    }
+
     fn get_args(&self) -> TokenStream {
         self
             .args.iter().map(|arg| {
@@ -102,6 +108,12 @@ impl<'a> ArgsStruct<'a> {
                             }
                         }
                     },
+                    ArgKind::ScriptInfo => {
+                        quote! {
+                            &mut _script_info
+                        }
+                    },
+
                     ArgKind::PositionalIterator(arg) => {
                         let position = arg.position;
                         quote! {
@@ -167,6 +179,9 @@ impl<'a> ArgsStruct<'a> {
         if self.has_register_arg() {
             return quote! {};
         }
+        if self.has_script_info_arg() {
+            return quote! {};
+        }
         let named_array = self.make_array_of_names(ArgKind::get_named_arg_name);
         let maybe_named_array = self.make_array_of_names(ArgKind::get_maybe_named_arg_name);
         let num_allowed_positional_args = if self.has_positional_iterator_arg() {
@@ -177,7 +192,7 @@ impl<'a> ArgsStruct<'a> {
         };
         let fn_name = self.function.sig.ident.to_string();
         quote! {
-            crate::nasl::utils::function::utils::check_args(_register, #fn_name, #named_array, #maybe_named_array, #num_allowed_positional_args)?;
+            crate::nasl::utils::function::utils::check_args(_register, _script_info, #fn_name, #named_array, #maybe_named_array, #num_allowed_positional_args)?;
         }
     }
 
@@ -244,6 +259,7 @@ impl<'a> ArgsStruct<'a> {
             #self_arg
             _register: &crate::nasl::Register,
             _context: &crate::nasl::Context<'_>,
+            _script_info: &mut crate::nasl::ScriptInfo,
         };
         let output_ty = match output {
             syn::ReturnType::Default => quote! { () },

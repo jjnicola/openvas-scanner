@@ -1,13 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::nasl::{
-    Context, ContextType, Register,
     interpreter::{
-        InterpretError,
-        declare::{DeclareFunctionExtension, DeclareVariableExtension},
-    },
-    prelude::NaslValue,
-    syntax::{IdentifierType, Lexer, Statement, StatementKind, SyntaxError, Token, TokenCategory},
+        declare::{DeclareFunctionExtension, DeclareVariableExtension}, InterpretError
+    }, prelude::NaslValue, syntax::{IdentifierType, Lexer, Statement, StatementKind, SyntaxError, Token, TokenCategory}, Context, ContextType, Register, ScriptInfo
 };
 
 use super::InterpretErrorKind;
@@ -216,6 +212,7 @@ fn expand_fork_at(
 pub struct Interpreter<'code, 'ctx> {
     pub(super) register: Register,
     pub(super) context: &'ctx Context<'ctx>,
+    pub(super) script_info: &'ctx mut ScriptInfo,
     pub(super) fork_reentry_data: ForkReentryData<'code>,
     lexer: Lexer<'code>,
     state: InterpreterState,
@@ -225,11 +222,12 @@ pub type InterpretResult = Result<NaslValue, InterpretError>;
 
 impl<'code, 'ctx> Interpreter<'code, 'ctx> {
     /// Creates a new Interpreter
-    pub fn new(register: Register, lexer: Lexer<'code>, context: &'ctx Context) -> Self {
+    pub fn new(register: Register, script_info: &'ctx mut ScriptInfo, lexer: Lexer<'code>, context: &'ctx Context) -> Self {
         Interpreter {
             register,
             lexer,
             context,
+            script_info,
             fork_reentry_data: ForkReentryData::new(),
             state: InterpreterState::Running,
         }
@@ -432,7 +430,7 @@ impl<'code, 'ctx> Interpreter<'code, 'ctx> {
                 let code = self.context.loader().load(&key)?;
 
                 let mut inter =
-                    Interpreter::new(self.register.clone(), self.lexer.clone(), self.context);
+                    Interpreter::new(self.register.clone(), self.script_info, self.lexer.clone(), self.context);
                 for stmt in crate::nasl::syntax::parse(&code) {
                     inter.execute_included_statement(&key, stmt).await?;
                 }
@@ -469,11 +467,13 @@ impl<'code, 'ctx> Interpreter<'code, 'ctx> {
         fork_reentry_data: ForkReentryData<'code>,
         register: &Register,
         lexer: &Lexer<'code>,
+        script_info: &'ctx mut ScriptInfo,
     ) -> Interpreter<'code, 'ctx> {
         Self {
             register: register.clone(),
             lexer: lexer.clone(),
             context: self.context,
+            script_info,
             fork_reentry_data,
             state: InterpreterState::Running,
         }
