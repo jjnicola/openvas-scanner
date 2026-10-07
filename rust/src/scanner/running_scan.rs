@@ -34,6 +34,7 @@ use tokio::sync::mpsc::{self, Receiver};
 use tokio::{sync::RwLock, task::JoinHandle};
 use tracing::{debug, trace, warn};
 
+use super::error::{ExecuteError, ScriptResult};
 use super::scan::Scan;
 
 /// Takes care of running a single scan to completion.
@@ -193,33 +194,63 @@ where
     }
 
     async fn run_to_completion(&self, runner: ScanRunner<'_>) -> Phase {
-        let mut end_phase = Phase::Succeeded;
-        let mut stream = Box::pin(runner.stream());
-        while let Some(it) = stream.next().await {
-            match it {
-                Ok(result) => {
-                    trace!(target = result.target, targets=?self.scan.targets);
-                    let mut status = self.status.write().await;
-                    if let Some(host_info) = status.host_info.as_mut() {
-                        host_info.register_finished_script(&result.target);
-                    }
-                    debug!(result=?result, "script finished");
+        let end_phase = std::sync::Mutex::new(Phase::Succeeded);
+        let handle = tokio::runtime::Handle::current();
 
-                    if result.kind.is_fatal() {
-                        end_phase = Phase::Failed;
-                    }
+        if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+            // One OS thread per host. The VTs use blocking I/O, so this
+            // must not run on the async worker without `block_in_place`.
+            let (this, end_phase) = (self, &end_phase);
+            tokio::task::block_in_place(|| {
+                runner.run_threaded(handle, &self.keep_running, move |it| {
+                    this.handle_result(it, end_phase)
+                });
+            });
+        } else {
+            // `block_in_place` is not available on a current-thread runtime.
+            let mut stream = Box::pin(runner.stream());
+            while let Some(it) = stream.next().await {
+                self.handle_result(it, &end_phase).await;
+                if !self.keep_running.load(Ordering::SeqCst) {
+                    break;
                 }
-                Err(x) => {
-                    warn!(error=?x, "unrecoverable error, aborting whole run");
-                    end_phase = Phase::Failed;
-                }
-            }
-            if !self.keep_running.load(Ordering::SeqCst) {
-                end_phase = Phase::Stopped;
-                break;
             }
         }
-        end_phase
+
+        if !self.keep_running.load(Ordering::SeqCst) {
+            return Phase::Stopped;
+        }
+        end_phase.into_inner().unwrap_or(Phase::Failed)
+    }
+
+    async fn handle_result(
+        &self,
+        it: Result<ScriptResult, ExecuteError>,
+        end_phase: &std::sync::Mutex<Phase>,
+    ) {
+        let fail = || {
+            if let Ok(mut phase) = end_phase.lock() {
+                *phase = Phase::Failed;
+            }
+        };
+        match it {
+            Ok(result) => {
+                trace!(target = result.target, targets=?self.scan.targets);
+                let mut status = self.status.write().await;
+                if let Some(host_info) = status.host_info.as_mut() {
+                    host_info.register_finished_script(&result.target);
+                }
+                debug!(result=?result, "script finished");
+
+                if result.kind.is_fatal() {
+                    fail();
+                }
+            }
+            Err(x) => {
+                warn!(error=?x, "unrecoverable error, aborting whole run");
+                fail();
+            }
+        }
     }
 
     async fn update_status_at_beginning_of_run(&self, host_info: HostInfo) {

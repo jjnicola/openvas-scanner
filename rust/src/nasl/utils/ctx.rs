@@ -317,7 +317,9 @@ pub struct ScanCtx<'a> {
     loader: &'a Loader,
     /// Function executor.
     executor: &'a Executor,
-    sockets: RwLock<NaslSockets>,
+    /// Socket state, one entry per target (indexed by `TargetId`), so that
+    /// hosts scanned in parallel never contend on the same lock.
+    sockets: Vec<RwLock<NaslSockets>>,
     /// Scanner preferences
     pub scan_preferences: ScanPrefs,
     /// Alive test methods
@@ -338,8 +340,16 @@ impl<'a> ScanCtx<'a> {
         alive_test_methods: Vec<AliveTestMethods>,
         notus: Option<NotusCtx>,
     ) -> Self {
-        let mut sockets = NaslSockets::default();
-        sockets.with_recv_timeout(scan_preferences.get_preference_int("checks_read_timeout"));
+        let recv_timeout = scan_preferences.get_preference_int("checks_read_timeout");
+        // At least one entry, so contexts without targets (e.g. in tests)
+        // still have socket state for `TargetId(0)`.
+        let sockets = (0..targets.iter().count().max(1))
+            .map(|_| {
+                let mut sockets = NaslSockets::default();
+                sockets.with_recv_timeout(recv_timeout);
+                RwLock::new(sockets)
+            })
+            .collect();
 
         Self {
             scan,
@@ -347,7 +357,7 @@ impl<'a> ScanCtx<'a> {
             storage,
             loader,
             executor,
-            sockets: RwLock::new(sockets),
+            sockets,
             scan_preferences,
             alive_test_methods,
             notus,
@@ -412,12 +422,18 @@ impl<'a> ScanCtx<'a> {
         pref_is_true(prefs, key)
     }
 
-    pub async fn read_sockets(&self) -> tokio::sync::RwLockReadGuard<'_, NaslSockets> {
-        self.sockets.read().await
+    pub async fn read_sockets(
+        &self,
+        target: TargetId,
+    ) -> tokio::sync::RwLockReadGuard<'_, NaslSockets> {
+        self.sockets[target.to_index()].read().await
     }
 
-    pub async fn write_sockets(&self) -> tokio::sync::RwLockWriteGuard<'_, NaslSockets> {
-        self.sockets.write().await
+    pub async fn write_sockets(
+        &self,
+        target: TargetId,
+    ) -> tokio::sync::RwLockWriteGuard<'_, NaslSockets> {
+        self.sockets[target.to_index()].write().await
     }
 
     pub(crate) fn add_fn_global_vars(&self, register: &mut Register) {
@@ -467,6 +483,10 @@ impl<'a> ScriptCtx<'a> {
             target_id,
             vt,
         }
+    }
+
+    pub(crate) fn target_id(&self) -> TargetId {
+        self.target_id
     }
 
     pub(crate) fn target(&self) -> &CtxTarget {
